@@ -13,8 +13,8 @@ This project implements a Model Predictive Path Integral (MPPI) controller using
 
 1.  **Clone the repository:**
     ```bash
-    git clone <your-repo-url>
-    cd mppi_eece
+    git clone https://github.com/leonardjmihs/mppI_filter
+    cd mppI_filter
     ```
 
 2.  **Install dependencies:**

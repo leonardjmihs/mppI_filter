@@ -1,0 +1,11 @@
+jax
+jaxlib
+matplotlib
+numpy
+tqdm
+casadi
+hj_reachability
+scipy
+shapely
+cvxpy
+osqp

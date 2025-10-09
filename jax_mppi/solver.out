@@ -1,0 +1,49 @@
+
+         ==============================
+         S N O P T  7.7.7    (Feb 2021)
+         ==============================
+1
+
+ SNMEMB EXIT 100 -- finished successfully
+ SNMEMB INFO 104 -- memory requirements estimated
+
+ Trial version of SNOPT -- for evaluation or academic purposes only
+1
+
+1
+
+
+
+ The user has defined     303   out of     303   constraint gradients.
+ The user has defined      65   out of      65   objective  gradients.
+
+ Cheap test of user-supplied problem derivatives...
+
+ The constraint gradients seem to be OK.
+
+ -->  The largest discrepancy was    1.49E-03  in constraint   177
+
+
+ The objective  gradients seem to be OK.
+
+ Gradient projected in one direction  -5.99364293516E-07
+ Difference approximation             -5.98672631303E-07
+1
+
+1
+
+ SNOPTC EXIT   0 -- finished successfully
+ SNOPTC INFO   1 -- optimality conditions satisfied
+
+ Problem name                 solver
+ No. of iterations                 270   Objective            1.6737354597E-07
+ No. of major iterations            96   Linear    obj. term  0.0000000000E+00
+ Penalty parameter           3.806E+01   Nonlinear obj. term  1.6737354597E-07
+ User function calls (total)       100
+ No. of superbasics                 24   No. of basic nonlinears            39
+ No. of degenerate steps             1   Percentage                       0.37
+ Max x       (scaled)       65 1.5E+00   Max pi      (scaled)        1 1.2E-04
+ Max x                      65 1.5E+00   Max pi                      1 7.9E-05
+ Max Prim inf(scaled)      184 1.3E-08   Max Dual inf(scaled)       41 1.5E-06
+ Max Primal infeas         184 4.7E-09   Max Dual infeas            13 7.5E-07
+ Nonlinear constraint violn    4.7E-09
