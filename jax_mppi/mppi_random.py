@@ -66,8 +66,8 @@ def rand_problem1():
     params = {}
     params['dt'] = 0.2  # Time step
     params['Nt'] = 30  # horizon for MPPI
-    params['N_safe'] = 30
-    params['N_mini'] = 15
+    params['N_safe'] = 0
+    params['N_mini'] = 0
     params['n_samples'] =100  # Number of samples for MPPI
     params['n_mini'] = 200
 
@@ -118,10 +118,10 @@ def rand_problem1():
     params['safe_zones'][1, :2] = params['start'][:2]
     
 
-    reachable_sets = []
-    for sz in params['safe_zones']:
-        target_values = get_reachable_set_hjr(sz[:2], dynamics, scale, wh, target_time)
-        reachable_sets.append(target_values)
+    # reachable_sets = []
+    # for sz in params['safe_zones']:
+    #     target_values = get_reachable_set_hjr(sz[:2], dynamics, scale, wh, target_time)
+    #     reachable_sets.append(target_values)
 
     resolution = 0.5
     origin = np.array([-40,-10])
@@ -150,44 +150,44 @@ def rand_problem1():
     dl = np.linalg.norm(path[0][:2]-path[1][:2])
     # check_reachability_hjr(reachable_sets[0], params['safe_zones'][0], params['safe_zones'][0], scale[:2], np.array([box_r*2, box_r*2]))
 
-    complete = False
-    i = 2
-    while not complete:
-        i+=1
-        diff = q_ref[:2]-params['start'][:2]
-        theta = np.arctan2(diff[1],diff[0])
-        cov = create_elliptical_covariance(10, 3, theta)
-        # xy = np.random.uniform(size=(2), low=low_val[:2], high=high_val[:2])
-        # xy = np.random.multivariate_normal(mean=(q_ref[:2]+params['start'][:2]) /2, cov=cov)
-        xy = dl*np.random.normal(size=(2)) + path[0][:2]
-        # params['safe_zones']
-        diff = xy-params['obs'][:,:2]
-        diff_sz = xy -params['safe_zones'][1:i,:2]
-        # while (np.any(np.linalg.norm(diff, axis=1) < np.sqrt(params['obs'][:,2]))) \
-        #         or (np.all(np.linalg.norm(diff_sz, axis=1) > box_r)):
-        while (np.any(np.linalg.norm(diff, axis=1) < np.sqrt(params['obs'][:,2]))) \
-                or (not check_reachability_multiple_hjr(reachable_sets, params['safe_zones'][1:], xy, scale[:2], np.array([box_r*2,box_r*2]))) \
-                or (np.sum(np.linalg.norm(diff_sz, axis=1) < box_r)>4):
-            # xy = np.random.uniform(size=(2), low=low_val[:2], high=high_val[:2])
-            xy = dl*np.random.normal(size=(2)) + path[min(i-3, len(path)-1)][:2]
-            diff = xy-params['obs'][:,:2]
-            diff_sz = xy -params['safe_zones'][1:i,:2]
-        # if np.linalg.norm(xy-params['safe_zones'][1,:2]) < 15*0.2*3.0*0.8:
-        #     complete=True
+    # complete = False
+    # i = 2
+    # while not complete:
+    #     i+=1
+    #     diff = q_ref[:2]-params['start'][:2]
+    #     theta = np.arctan2(diff[1],diff[0])
+    #     cov = create_elliptical_covariance(10, 3, theta)
+    #     # xy = np.random.uniform(size=(2), low=low_val[:2], high=high_val[:2])
+    #     # xy = np.random.multivariate_normal(mean=(q_ref[:2]+params['start'][:2]) /2, cov=cov)
+    #     xy = dl*np.random.normal(size=(2)) + path[0][:2]
+    #     # params['safe_zones']
+    #     diff = xy-params['obs'][:,:2]
+    #     diff_sz = xy -params['safe_zones'][1:i,:2]
+    #     # while (np.any(np.linalg.norm(diff, axis=1) < np.sqrt(params['obs'][:,2]))) \
+    #     #         or (np.all(np.linalg.norm(diff_sz, axis=1) > box_r)):
+    #     while (np.any(np.linalg.norm(diff, axis=1) < np.sqrt(params['obs'][:,2]))) \
+    #             or (not check_reachability_multiple_hjr(reachable_sets, params['safe_zones'][1:], xy, scale[:2], np.array([box_r*2,box_r*2]))) \
+    #             or (np.sum(np.linalg.norm(diff_sz, axis=1) < box_r)>4):
+    #         # xy = np.random.uniform(size=(2), low=low_val[:2], high=high_val[:2])
+    #         xy = dl*np.random.normal(size=(2)) + path[min(i-3, len(path)-1)][:2]
+    #         diff = xy-params['obs'][:,:2]
+    #         diff_sz = xy -params['safe_zones'][1:i,:2]
+    #     # if np.linalg.norm(xy-params['safe_zones'][1,:2]) < 15*0.2*3.0*0.8:
+    #     #     complete=True
 
-        target_values = get_reachable_set_hjr(xy[:2], dynamics, scale, wh, target_time)
-        reachable_sets.append(target_values)
+    #     target_values = get_reachable_set_hjr(xy[:2], dynamics, scale, wh, target_time)
+    #     reachable_sets.append(target_values)
 
-        if check_reachability_hjr(reachable_sets[0], params['safe_zones'][0], xy, scale[:2], np.array([box_r*2, box_r*2])):
-            complete=True
+    #     if check_reachability_hjr(reachable_sets[0], params['safe_zones'][0], xy, scale[:2], np.array([box_r*2, box_r*2])):
+    #         complete=True
 
 
         # params['safe_zones'][i,:2] =  xy
         # breakpoint()
-        try:
-            params['safe_zones'] = np.vstack([params['safe_zones'], np.hstack([xy,0])])
-        except Exception as e:
-            breakpoint()
+        # try:
+        #     params['safe_zones'] = np.vstack([params['safe_zones'], np.hstack([xy,0])])
+        # except Exception as e:
+        #     breakpoint()
     return params
 
 def get_reachable_set_hjr(pos, dynamics, scale, wh, target_time, tol=0.25, solver_settings=None):
@@ -287,7 +287,7 @@ def do_mppi_ais_mpc(params, rng_key, do_mpc=True, do_ais=True, base_alg=False, h
                         max_raw_path2=10,
                         reserve_num=num_anci, 
                         ratio_to_short=1.5,
-                        sample_sz_p=1.0,
+                        sample_sz_p=0.5,
                         occup_value=100
                         )
     planner.occup_grid = grid.occup_grid
@@ -402,7 +402,6 @@ def do_mppi_ais_mpc(params, rng_key, do_mpc=True, do_ais=True, base_alg=False, h
         st_mppi_time = time.time()
         if do_ais:
             outputs = mppi_planner.mppi_mmodal(sim_state, global_U, U_anci, subkey, q_ref, safe_zones, jnp.array(grid.occup_grid),origin,resolution,wh=wh)
-            breakpoint()
         else:
             try:
                 outputs = mppi_planner.mppi_mmodal_no_ais(sim_state, global_U, U_anci, subkey, q_ref, safe_zones, jnp.array(grid.occup_grid),origin,resolution,wh=wh)
@@ -497,7 +496,6 @@ def gen_and_save_results(params, outputs, foldername, counter, alg="mpc_ais"):
     states = np.array(states)
     total_sampled_states = np.array(total_sampled_states)
     number_safe_hist = np.array(number_safe_hist)
-    total_con_states = np.array(total_con_states) 
     trial_hz = np.array(trial_hz) 
     safety_hist = np.array(safety_hist) 
     costs = np.array(costs)
@@ -571,9 +569,9 @@ def main(args):
         params_copy = copy.deepcopy(params)
         
         # try:
-        outputs1= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], solver=solver)
+        outputs1= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_mpc=True, do_ais=True, solver=solver)
         # outputs2= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_ais=False, solver=solver)
-        # outputs3= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_mpc=False, do_ais=False, solver=solver)
+        outputs3= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_mpc=False, do_ais=True, solver=solver)
         # outputs4= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], base_alg=True, do_mpc=False, solver=solver)
         # outputs5= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], base_alg=True, do_mpc=False, heuristic_weight=3, solver=solver)
         # outputs6= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], base_alg=True, do_mpc=False, heuristic_weight=30, solver=solver)
@@ -600,8 +598,8 @@ def main(args):
         plt.close('all')
         # gen_and_save_results(copy.deepcopy(params), outputs2, foldername, counter, alg="mpc")
         # plt.close('all')
-        # gen_and_save_results(copy.deepcopy(params), outputs3, foldername, counter, alg="base")
-        # plt.close('all')
+        gen_and_save_results(copy.deepcopy(params), outputs3, foldername, counter, alg="base")
+        plt.close('all')
         # gen_and_save_results(copy.deepcopy(params), outputs4, foldername, counter, alg="mppi")
         # plt.close('all')
         # gen_and_save_results(copy.deepcopy(params), outputs5, foldername, counter, alg="mppi_heuristic_3")

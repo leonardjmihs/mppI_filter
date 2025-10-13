@@ -3,10 +3,9 @@ import random
 import numpy as np
 import matplotlib.pyplot as plt
 import time
-from branch_mppi.jax_mppi.grid import OccupGrid
+from jax_mppi.grid import OccupGrid
 from enum import Enum
 import math
-import pydecomp as pdc
 
 class NODE_TYPE(Enum):
     GUARD=1
@@ -354,7 +353,6 @@ class TopoPRM:
         if paths is None:
             return None
         prune_paths = []
-        # breakpoint()
         if len(paths) < 1:
             return prune_paths
         exist_paths_id = []
@@ -435,7 +433,6 @@ class TopoPRM:
             return None
         min_len = np.inf
         short_paths = []
-        # breakpoint()
         for i in range(self.reserve_num):
             path_id = self.shortestPath(paths)
             if len(paths) <= 0:
@@ -707,6 +704,7 @@ class TopoPRM:
         return math.hypot(dx, dy), math.atan2(dy, dx)
 
 def main():
+    import pydecomp as pdc
     # np.random.seed(0)
     # obs = np.array([[-12.5, -5,2.5],
     #                 [-15,0,1],

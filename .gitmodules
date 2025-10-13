@@ -1,0 +1,3 @@
+[submodule "pydecomp"]
+	path = pydecomp
+	url = https://github.com/leonardjmihs/pydecomp

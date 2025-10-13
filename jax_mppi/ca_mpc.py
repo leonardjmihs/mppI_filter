@@ -8,12 +8,14 @@ import time
 from functools import partial
 
 import numpy as np
-from branch_mppi.systems import NonlinerSystem
+# from branch_mppi.systems import NonlinerSystem
+from systems import NonlinerSystem
 # from branch_mppi.jax_mppi import plot_utils
 import matplotlib.pyplot as plt
 import casadi as ca
 from casadi import SX, MX, DM
-import pydecomp as pdc
+
+# import pydecomp as pdc
 
 def rotate_2dvectors(x, theta, center=np.array([0.0,0.0])):
     x = np.array(x)
@@ -62,11 +64,11 @@ def find_Nonlin_Controls(path,start, solver, dis, system, Nt, occupied, box, pla
         U =  np.kron(np.ones((1, Nt+1)), [0.0, system.control_bounds[1][1]]).ravel()
     u0 = U.reshape((-1,2))
     p = np.array(path)[:,0:2]
-    if len(occupied) < 1:
-        A = [np.zeros((ns,2)) for i in range(len(p))]
-        b = [np.ones((ns,1))*1000 for i in range(len(p))]
-    else:
-        A, b = pdc.convex_decomposition_2D(occupied, p, box)
+    # if len(occupied) < 1:
+    A = [np.zeros((ns,2)) for i in range(len(p))]
+    b = [np.ones((ns,1))*1000 for i in range(len(p))]
+    # else:
+    #     A, b = pdc.convex_decomposition_2D(occupied, p, box)
     X0, idx =  planner.discretizePath(p,Nt+1)
     thetas = np.ones((Nt+1, 1)) * start[2]
     X0_f = np.hstack((np.array(X0), thetas.reshape(-1,1)))

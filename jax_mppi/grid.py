@@ -2,7 +2,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import pydecomp as pdc
 
 class OccupGrid:
     def __init__(self, boundary, resolution):
@@ -55,6 +54,7 @@ class OccupGrid:
         return occup_grid
 
 def main():
+    import pydecomp as pdc
     obs = jnp.array([[-12.5, -5,2.5],
                     [-15,0,1],
                     [-5, 2, 2],
