@@ -218,3 +218,4 @@ __marimo__/
 # Custom
 *c_generated_code*
 *sim_results*
+*acados_ocp.json

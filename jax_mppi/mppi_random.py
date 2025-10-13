@@ -130,24 +130,24 @@ def rand_problem1():
     boundary = [[origin[0], origin[0]+topo_wh[0]*resolution], [origin[1], origin[1]+topo_wh[1]*resolution]]
     grid = OccupGrid(boundary, resolution)
     grid.find_occupancy_grid(params['obs'], buffer=0.05)
-    num_anci = 3
-    topo = TopoPRM(None, resolution=resolution, 
-                        max_raw_path=10, 
-                        max_raw_path2=10,
-                        reserve_num=num_anci, 
-                        ratio_to_short=1.5,
-                        sample_sz_p=0.0,
-                        occup_value=100,
-                        max_time=1.0,
-                        max_sample_num=1000
-                        )
-    topo.occup_grid = grid.occup_grid
-    topo.origin = origin
-    topo.resolution = resolution
-    topo.wh = topo_wh
-    paths, _ = topo.findTopoPaths(params['start'], q_ref, reset=True)
-    path, _ = topo.discretizePath(np.array(paths[-1]), 50)
-    dl = np.linalg.norm(path[0][:2]-path[1][:2])
+    # num_anci = 3
+    # topo = TopoPRM(None, resolution=resolution, 
+    #                     max_raw_path=10, 
+    #                     max_raw_path2=10,
+    #                     reserve_num=num_anci, 
+    #                     ratio_to_short=1.5,
+    #                     sample_sz_p=1.0,
+    #                     occup_value=100,
+    #                     max_time=1.0,
+    #                     max_sample_num=1000
+    #                     )
+    # topo.occup_grid = grid.occup_grid
+    # topo.origin = origin
+    # topo.resolution = resolution
+    # topo.wh = topo_wh
+    # paths, _ = topo.findTopoPaths(params['start'], q_ref, reset=True)
+    # path, _ = topo.discretizePath(np.array(paths[-1]), 50)
+    # dl = np.linalg.norm(path[0][:2]-path[1][:2])
     # check_reachability_hjr(reachable_sets[0], params['safe_zones'][0], params['safe_zones'][0], scale[:2], np.array([box_r*2, box_r*2]))
 
     # complete = False
@@ -224,7 +224,7 @@ def check_reachability_multiple_hjr(target_values, safe_zones, pos, scale,wh):
 
         
 
-def do_mppi_ais_mpc(params, rng_key, do_mpc=True, do_ais=True, base_alg=False, heuristic_weight=0.0,solver="ipopt"):
+def do_mppi_ais_mpc(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic_weight=0.0,solver="ipopt"):
     dt = params['dt']
     Nt = params['Nt']
     N_safe = params['N_safe']
@@ -287,7 +287,7 @@ def do_mppi_ais_mpc(params, rng_key, do_mpc=True, do_ais=True, base_alg=False, h
                         max_raw_path2=10,
                         reserve_num=num_anci, 
                         ratio_to_short=1.5,
-                        sample_sz_p=0.5,
+                        sample_sz_p=0.0,
                         occup_value=100
                         )
     planner.occup_grid = grid.occup_grid
@@ -297,11 +297,11 @@ def do_mppi_ais_mpc(params, rng_key, do_mpc=True, do_ais=True, base_alg=False, h
     planner.safe_zones = safe_zones
 
     dis = nlmodel.control_bounds[1][1]*nlmodel.dt * Nt
-    total_sampled_states = [np.ones((n_samples, Nt, 3))*np.nan]
+    total_sampled_states = [np.ones((n_samples//(ais_iters+1), Nt, 3))*np.nan]
     if N_mini == 0:
-        total_con_states = [np.ones((n_samples, 1, 3))*np.nan]
+        total_con_states = [np.ones((n_samples//(ais_iters+1), 1, 3))*np.nan]
     else:
-        total_con_states = [np.ones((n_samples, N_mini, 3))*np.nan]
+        total_con_states = [np.ones((n_samples//(ais_iters+1), N_mini, 3))*np.nan]
     
     total_sampled_states[0][0,0] = np.squeeze(states) # Closed-loop simulation
     # breakpoint()
@@ -400,13 +400,14 @@ def do_mppi_ais_mpc(params, rng_key, do_mpc=True, do_ais=True, base_alg=False, h
                     print(f"MPC Time:{time.time()-st}")
                     mpc_times.append(time.time()-start_mpc_time)
         st_mppi_time = time.time()
-        if do_ais:
-            outputs = mppi_planner.mppi_mmodal(sim_state, global_U, U_anci, subkey, q_ref, safe_zones, jnp.array(grid.occup_grid),origin,resolution,wh=wh)
-        else:
-            try:
-                outputs = mppi_planner.mppi_mmodal_no_ais(sim_state, global_U, U_anci, subkey, q_ref, safe_zones, jnp.array(grid.occup_grid),origin,resolution,wh=wh)
-            except Exception as e:
-                print(e)
+        outputs = mppi_planner.mppi_mmodal(sim_state, global_U, U_anci, subkey, q_ref, safe_zones, jnp.array(grid.occup_grid),origin,resolution,wh=wh, ais_iters=ais_iters)
+        # if do_ais:
+        #     outputs = mppi_planner.mppi_mmodal(sim_state, global_U, U_anci, subkey, q_ref, safe_zones, jnp.array(grid.occup_grid),origin,resolution,wh=wh)
+        # else:
+        #     try:
+        #         outputs = mppi_planner.mppi_mmodal_no_ais(sim_state, global_U, U_anci, subkey, q_ref, safe_zones, jnp.array(grid.occup_grid),origin,resolution,wh=wh)
+        #     except Exception as e:
+        #         print(e)
         u_mppi_cbf = outputs[0]
         global_u = outputs[1]
         global_U = outputs[2]
@@ -558,7 +559,7 @@ def gen_and_save_results(params, outputs, foldername, counter, alg="mpc_ais"):
 
 
 def main(args):
-    np.random.seed(12310) 
+    # np.random.seed(12310) 
     solver = args.solver if hasattr(args, 'solver') else "ipopt"
     trials=1
     rng_keys = jax.random.split(jax.random.PRNGKey(0), trials)
@@ -569,10 +570,10 @@ def main(args):
         params_copy = copy.deepcopy(params)
         
         # try:
-        outputs1= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_mpc=True, do_ais=True, solver=solver)
-        # outputs2= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_ais=False, solver=solver)
-        outputs3= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_mpc=False, do_ais=True, solver=solver)
-        # outputs4= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], base_alg=True, do_mpc=False, solver=solver)
+        outputs4= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_mpc=False, ais_iters= 1, solver=solver)
+        # outputs3= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_mpc=True, ais_iters=5, solver=solver)
+        outputs2= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_mpc=False, ais_iters= 0, solver=solver)
+        outputs1= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_mpc=True, ais_iters=0, solver=solver)
         # outputs5= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], base_alg=True, do_mpc=False, heuristic_weight=3, solver=solver)
         # outputs6= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], base_alg=True, do_mpc=False, heuristic_weight=30, solver=solver)
         # outputs7= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], base_alg=True, do_mpc=True, heuristic_weight=30, solver=solver)
@@ -594,14 +595,14 @@ def main(args):
             params_copy['QT'] = params_copy['QT'].tolist()
             params_copy['R'] = params_copy['R'].tolist()
             json.dump(params_copy, file)
-        gen_and_save_results(copy.deepcopy(params), outputs1, foldername, counter, alg="ais_mpc")
+        gen_and_save_results(copy.deepcopy(params), outputs1, foldername, counter, alg="mppi_mpc")
         plt.close('all')
-        # gen_and_save_results(copy.deepcopy(params), outputs2, foldername, counter, alg="mpc")
-        # plt.close('all')
-        gen_and_save_results(copy.deepcopy(params), outputs3, foldername, counter, alg="base")
+        gen_and_save_results(copy.deepcopy(params), outputs2, foldername, counter, alg="mppi")
         plt.close('all')
-        # gen_and_save_results(copy.deepcopy(params), outputs4, foldername, counter, alg="mppi")
+        # gen_and_save_results(copy.deepcopy(params), outputs3, foldername, counter, alg="mppi_mpc_ais")
         # plt.close('all')
+        gen_and_save_results(copy.deepcopy(params), outputs4, foldername, counter, alg="mppi_ais")
+        plt.close('all')
         # gen_and_save_results(copy.deepcopy(params), outputs5, foldername, counter, alg="mppi_heuristic_3")
         # plt.close('all')
         # gen_and_save_results(copy.deepcopy(params), outputs6, foldername, counter, alg="mppi_heuristic_30")

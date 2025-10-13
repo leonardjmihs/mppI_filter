@@ -324,6 +324,7 @@ class TopoPRM:
             steps = int(np.floor(dist/thresh))
             ray = np.linspace(pos1, pos2, steps)
         except:
+            return False
             breakpoint()
         if not check_endpoints:
             ray = ray[1:-1]
