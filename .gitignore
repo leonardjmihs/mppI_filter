@@ -219,3 +219,5 @@ __marimo__/
 *c_generated_code*
 *sim_results*
 *acados_ocp.json
+*jit_tmp*
+*.o*

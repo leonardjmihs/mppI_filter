@@ -116,13 +116,6 @@ def rand_problem1():
     params['safe_zones'] = np.zeros((2,3))
     params['safe_zones'][0] = q_ref
     params['safe_zones'][1, :2] = params['start'][:2]
-    
-
-    # reachable_sets = []
-    # for sz in params['safe_zones']:
-    #     target_values = get_reachable_set_hjr(sz[:2], dynamics, scale, wh, target_time)
-    #     reachable_sets.append(target_values)
-
     resolution = 0.5
     origin = np.array([-40,-10])
     topo_wh = np.array([50/resolution, 20/resolution]) # width, height
@@ -130,64 +123,6 @@ def rand_problem1():
     boundary = [[origin[0], origin[0]+topo_wh[0]*resolution], [origin[1], origin[1]+topo_wh[1]*resolution]]
     grid = OccupGrid(boundary, resolution)
     grid.find_occupancy_grid(params['obs'], buffer=0.05)
-    # num_anci = 3
-    # topo = TopoPRM(None, resolution=resolution, 
-    #                     max_raw_path=10, 
-    #                     max_raw_path2=10,
-    #                     reserve_num=num_anci, 
-    #                     ratio_to_short=1.5,
-    #                     sample_sz_p=1.0,
-    #                     occup_value=100,
-    #                     max_time=1.0,
-    #                     max_sample_num=1000
-    #                     )
-    # topo.occup_grid = grid.occup_grid
-    # topo.origin = origin
-    # topo.resolution = resolution
-    # topo.wh = topo_wh
-    # paths, _ = topo.findTopoPaths(params['start'], q_ref, reset=True)
-    # path, _ = topo.discretizePath(np.array(paths[-1]), 50)
-    # dl = np.linalg.norm(path[0][:2]-path[1][:2])
-    # check_reachability_hjr(reachable_sets[0], params['safe_zones'][0], params['safe_zones'][0], scale[:2], np.array([box_r*2, box_r*2]))
-
-    # complete = False
-    # i = 2
-    # while not complete:
-    #     i+=1
-    #     diff = q_ref[:2]-params['start'][:2]
-    #     theta = np.arctan2(diff[1],diff[0])
-    #     cov = create_elliptical_covariance(10, 3, theta)
-    #     # xy = np.random.uniform(size=(2), low=low_val[:2], high=high_val[:2])
-    #     # xy = np.random.multivariate_normal(mean=(q_ref[:2]+params['start'][:2]) /2, cov=cov)
-    #     xy = dl*np.random.normal(size=(2)) + path[0][:2]
-    #     # params['safe_zones']
-    #     diff = xy-params['obs'][:,:2]
-    #     diff_sz = xy -params['safe_zones'][1:i,:2]
-    #     # while (np.any(np.linalg.norm(diff, axis=1) < np.sqrt(params['obs'][:,2]))) \
-    #     #         or (np.all(np.linalg.norm(diff_sz, axis=1) > box_r)):
-    #     while (np.any(np.linalg.norm(diff, axis=1) < np.sqrt(params['obs'][:,2]))) \
-    #             or (not check_reachability_multiple_hjr(reachable_sets, params['safe_zones'][1:], xy, scale[:2], np.array([box_r*2,box_r*2]))) \
-    #             or (np.sum(np.linalg.norm(diff_sz, axis=1) < box_r)>4):
-    #         # xy = np.random.uniform(size=(2), low=low_val[:2], high=high_val[:2])
-    #         xy = dl*np.random.normal(size=(2)) + path[min(i-3, len(path)-1)][:2]
-    #         diff = xy-params['obs'][:,:2]
-    #         diff_sz = xy -params['safe_zones'][1:i,:2]
-    #     # if np.linalg.norm(xy-params['safe_zones'][1,:2]) < 15*0.2*3.0*0.8:
-    #     #     complete=True
-
-    #     target_values = get_reachable_set_hjr(xy[:2], dynamics, scale, wh, target_time)
-    #     reachable_sets.append(target_values)
-
-    #     if check_reachability_hjr(reachable_sets[0], params['safe_zones'][0], xy, scale[:2], np.array([box_r*2, box_r*2])):
-    #         complete=True
-
-
-        # params['safe_zones'][i,:2] =  xy
-        # breakpoint()
-        # try:
-        #     params['safe_zones'] = np.vstack([params['safe_zones'], np.hstack([xy,0])])
-        # except Exception as e:
-        #     breakpoint()
     return params
 
 def get_reachable_set_hjr(pos, dynamics, scale, wh, target_time, tol=0.25, solver_settings=None):
@@ -243,10 +178,6 @@ def do_mppi_ais_mpc(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, h
     R = params['R']
     QT = params['QT']
 
-    if base_alg:
-        N_mini=0
-        n_mini=0
-        n_samples=10000
 
     # ns = safe_zones.shape[0]
     ns = 20
@@ -286,10 +217,21 @@ def do_mppi_ais_mpc(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, h
                         max_raw_path=10, 
                         max_raw_path2=10,
                         reserve_num=num_anci, 
-                        ratio_to_short=1.5,
+                        ratio_to_short=2.0,
                         sample_sz_p=0.0,
-                        occup_value=100
+                        occup_value=100,
+                        max_time=0.1
                         )
+    if base_alg:
+        planner = TopoPRM(None, resolution=resolution, 
+                            max_raw_path=10, 
+                            max_raw_path2=10,
+                            reserve_num=num_anci, 
+                            ratio_to_short=2.0,
+                            sample_sz_p=0.0,
+                            occup_value=100,
+                            max_time=np.inf
+                            )
     planner.occup_grid = grid.occup_grid
     planner.origin = origin
     planner.resolution = resolution
@@ -297,15 +239,15 @@ def do_mppi_ais_mpc(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, h
     planner.safe_zones = safe_zones
 
     dis = nlmodel.control_bounds[1][1]*nlmodel.dt * Nt
-    total_sampled_states = [np.ones((n_samples//(ais_iters+1), Nt, 3))*np.nan]
-    if N_mini == 0:
-        total_con_states = [np.ones((n_samples//(ais_iters+1), 1, 3))*np.nan]
-    else:
-        total_con_states = [np.ones((n_samples//(ais_iters+1), N_mini, 3))*np.nan]
+    # total_sampled_states = [np.ones((n_samples//(ais_iters+1), Nt, 3))*np.nan]
+    # if N_mini == 0:
+    #     total_con_states = [np.ones((n_samples//(ais_iters+1), 1, 3))*np.nan]
+    # else:
+    #     total_con_states = [np.ones((n_samples//(ais_iters+1), N_mini, 3))*np.nan]
     
-    total_sampled_states[0][0,0] = np.squeeze(states) # Closed-loop simulation
+    # total_sampled_states[0][0,0] = np.squeeze(states) # Closed-loop simulation
     # breakpoint()
-    total_con_states[0][0,0] = np.squeeze(states) # Closed-loop simulation
+    # total_con_states[0][0,0] = np.squeeze(states) # Closed-loop simulation
 
     not_inf = 0
     number_safe_avg = 0
@@ -357,13 +299,65 @@ def do_mppi_ais_mpc(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, h
     topo_times = []
     mpc_times = []
     mppi_times = []
+
+    def eval_trajectory(u_seq, start, system, Nt, q_ref):
+        state = start
+        cost = 0
+        for t in range(Nt):
+            u = u_seq[t,:]
+            state = system.dynamics(state, u, 0, dt=dt, params=system.nominal_params)
+            cost = cost + (state - q_ref) @ Q @ (state - q_ref) + u @ R @ u
+        cost = cost + (state - q_ref) @ QT @ (state - q_ref)
+        return cost
+
     for t in timestep_prog:
         rng_key, subkey = jax.random.split(rng_key)
         st = time.time()
         U_anci = np.tile(np.array(global_U    ), [num_anci+1,1])
-        if do_mpc:
-            # U_anci = np.tile(U, [num_anci,1])
-            # U_anci = np.tile(global_U, [num_anci,1])
+        if not base_alg:
+            if do_mpc:
+                # U_anci = np.tile(U, [num_anci,1])
+                # U_anci = np.tile(global_U, [num_anci,1])
+                find_controls = functools.partial(find_Nonlin_Controls, 
+                        start=sim_state, 
+                        solver=f, 
+                        dis=dis, 
+                        system=nlmodel, 
+                        Nt=int(Nt/2),occupied=occupied, box=box,planner=planner, ns=ns)
+                st_topo_time = time.time()
+                paths, _ = planner.findTopoPaths(sim_state, q_ref, reset=True) 
+                topo_times.append(time.time()-st_topo_time)
+
+                if paths is not None:
+                    num_paths = len(paths) 
+                    start_mpc_time = time.time()
+                    for i,path in enumerate(paths):
+                        x_sol, u_sol, _ = find_controls(path)
+                        u_sol = np.repeat(u_sol,repeats=2,axis=0)
+                        try:
+                            U_anci[i+1,:] = u_sol[:Nt,:].reshape((Nt*2))
+                        except:
+                            breakpoint()
+                        print(f"MPC Time:{time.time()-st}")
+                        mpc_times.append(time.time()-start_mpc_time)
+            st_mppi_time = time.time()
+            outputs = mppi_planner.mppi_mmodal(sim_state, global_U, U_anci, subkey, q_ref, safe_zones, jnp.array(grid.occup_grid),origin,resolution,wh=wh, ais_iters=ais_iters)
+            u_mppi_cbf = outputs[0]
+            global_u = outputs[1]
+            global_U = outputs[2]
+            min_f_cost = outputs[3]
+            sampled_states = outputs[4]
+            # contingency_states = outputs[5]
+            # contingency_states = np.nan_to_num(contingency_states)
+            number_safe = outputs[6]
+            current_safe = outputs[7]
+            temperature = outputs[9]
+            mppi_planner.temperature = temperature
+            safe_u_seqs = outputs[10]
+
+            cost = eval_trajectory(outputs[1], sim_state, nlmodel, Nt, q_ref)
+
+        else:
             find_controls = functools.partial(find_Nonlin_Controls, 
                     start=sim_state, 
                     solver=f, 
@@ -373,34 +367,28 @@ def do_mppi_ais_mpc(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, h
             st_topo_time = time.time()
             paths, _ = planner.findTopoPaths(sim_state, q_ref, reset=True) 
             topo_times.append(time.time()-st_topo_time)
+            start_mpc_time = time.time()
+            st_mppi_time = time.time()
 
-            if paths is not None:
-                num_paths = len(paths) 
-                start_mpc_time = time.time()
-                for i,path in enumerate(paths):
-                    x_sol, u_sol, _ = find_controls(path)
-                    # st = time.time()
-                    # path = planner.cutToMax(path, dis)
-                    # path = planner.cutToSafe(path)
-                    # p = np.array(path)[:,0:2]
-                    # X0, idx =  planner.discretizePath(p,Nt+1)
-                    # thetas = np.ones((Nt+1, 1)) * sim_state[2]
-                    # X0 = np.array(X0)
-                    # # thetas = np.arctan2(np.gradient(X0[:,1]), np.gradient(X0[:,0]))
-                    # X0_f = np.hstack((np.array(X0), thetas.reshape(-1,1)))
-                    # rX0 = rotate_2dvectors(X0_f, sim_state[2], sim_state[:2])
-                    # rX0[:,2] = wrap_to_pi(rX0[:,2] - sim_state[2]) 
-                    # x_sol, u_sol= solve_trajectory(solver_acd, x0=np.array([0.0,0.0,0.0]), x_ref=rX0)
-                    
-                    u_sol = np.repeat(u_sol,repeats=2,axis=0)
-                    try:
-                        U_anci[i+1,:] = u_sol[:Nt,:].reshape((Nt*2))
-                    except:
-                        breakpoint()
-                    print(f"MPC Time:{time.time()-st}")
-                    mpc_times.append(time.time()-start_mpc_time)
-        st_mppi_time = time.time()
-        outputs = mppi_planner.mppi_mmodal(sim_state, global_U, U_anci, subkey, q_ref, safe_zones, jnp.array(grid.occup_grid),origin,resolution,wh=wh, ais_iters=ais_iters)
+            min_f_cost = np.inf
+            for i,path in enumerate(paths):
+                x_sol, u_sol, _ = find_controls(path)
+                u_sol = np.repeat(u_sol,repeats=2,axis=0)
+                u_sol = u_sol[:Nt,:] 
+                cost = eval_trajectory(u_sol, sim_state, nlmodel, Nt, q_ref)
+                if min_f_cost > cost:
+                    min_f_cost = cost
+                    u_mppi_cbf = u_sol
+                    global_u = u_sol
+                    global_u = jnp.roll(global_u, -1, axis=0)
+                    global_u = global_u.at[-1].set(global_u[-2])
+                    global_u = global_u.reshape((1, -1)).squeeze(0)
+                    global_U = u_sol.reshape((Nt*2))
+                    sampled_states = x_sol
+                    number_safe = 1
+                    current_safe = 1
+                print(f"MPC Time:{time.time()-st}")
+                mpc_times.append(time.time()-start_mpc_time)
         # if do_ais:
         #     outputs = mppi_planner.mppi_mmodal(sim_state, global_U, U_anci, subkey, q_ref, safe_zones, jnp.array(grid.occup_grid),origin,resolution,wh=wh)
         # else:
@@ -408,19 +396,6 @@ def do_mppi_ais_mpc(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, h
         #         outputs = mppi_planner.mppi_mmodal_no_ais(sim_state, global_U, U_anci, subkey, q_ref, safe_zones, jnp.array(grid.occup_grid),origin,resolution,wh=wh)
         #     except Exception as e:
         #         print(e)
-        u_mppi_cbf = outputs[0]
-        global_u = outputs[1]
-        global_U = outputs[2]
-        min_f_cost = outputs[3]
-        sampled_states = outputs[4]
-        contingency_states = outputs[5]
-        contingency_states = np.nan_to_num(contingency_states)
-        number_safe = outputs[6]
-        current_safe = outputs[7]
-        temperature = outputs[9]
-        mppi_planner.temperature = temperature
-
-        safe_u_seqs = outputs[10]
         # print(safe_u_seqs.shape)
         # breakpoint()
         # print(temperature)
@@ -439,18 +414,20 @@ def do_mppi_ais_mpc(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, h
             not_inf +=1
         else:
             print("\n" + str(iter) + " ")
+
         for i in range(ratio_sim_mppi):
             sim_state = nlmodel.dynamics(sim_state, u_mppi_cbf[0], 0, dt=dt/ratio_sim_mppi, params=nlmodel.nominal_params)
             dist = np.linalg.norm((sim_state - q_ref)[0:2])
             if (dist<0.5) and timestep_reached==-1:
                 timestep_reached = t / dt
+            # cost = cost + dist
 
-            cost = cost + dist
+
         states.append(sim_state)
         global_us.append(global_u)
         global_Us.append(global_U.copy())
-        total_sampled_states.append(sampled_states)
-        total_con_states.append(contingency_states)
+        # total_sampled_states.append(sampled_states)
+        # total_con_states.append(contingency_states)
         trial_hz += timestep_prog.format_dict['rate'] if timestep_prog.format_dict['rate'] is not None else 0
         safety_hist.append(True)
         costs.append(cost)
@@ -460,67 +437,58 @@ def do_mppi_ais_mpc(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, h
         iter+=1
     time_taken = time.time() - start_time
     # breakpoint()
-    return states, total_sampled_states, number_safe_hist, total_con_states, trial_hz/iter, safety_hist, costs, timestep_reached, global_us, time_taken, mpc_times, mppi_times, topo_times
+    return (states,
+            # total_sampled_states, 
+            number_safe_hist, 
+            # total_con_states, 
+            trial_hz/iter, 
+            safety_hist, costs, 
+            timestep_reached, 
+            global_us, 
+            time_taken, 
+            mpc_times, 
+            mppi_times,
+            topo_times)
 
 def gen_and_save_results(params, outputs, foldername, counter, alg="mpc_ais"):
-    plot_every_k_frames=2
-    dt = params['dt']
-    Nt = params['Nt']
-    N_safe = params['N_safe']
-    N_mini = params['N_mini']
     n_samples = params['n_samples']
-    n_mini = params['n_mini']
-    start = params['start']
-    q_ref = params['q_ref']
     safe_zones = params['safe_zones']
     obs = params['obs']
-    nlmodel = params['nlmodel']
-    T = params['T']
-    sigma0 = params['sigma0']
-    temperature = params['temperature']
 
     states = outputs[0]
-    total_sampled_states = outputs[1]
-    number_safe_hist = outputs[2]
-    total_con_states = outputs[3] 
-    trial_hz = outputs[4] 
-    safety_hist = outputs[5] 
-    costs = outputs[6]
-    timestep_reached = outputs[7]
-    global_us = outputs[8]
-    time_taken = outputs[9]
-    mpc_times = outputs[10]
-    mppi_times = outputs[11]
-    topo_times = outputs[12]
+    # total_sampled_states = outputs[1]
+    number_safe_hist = outputs[1]
+    # total_con_states = outputs[3] 
+    trial_hz = outputs[2] 
+    safety_hist = outputs[3] 
+    costs = outputs[4]
+    timestep_reached = outputs[5]
+    global_us = outputs[6]
+    time_taken = outputs[7]
+    mpc_times = outputs[8]
+    mppi_times = outputs[9]
+    topo_times = outputs[10]
     percent_safe_hist = np.array(number_safe_hist) / n_samples
 
     states = np.array(states)
-    total_sampled_states = np.array(total_sampled_states)
+    # total_sampled_states = np.array(total_sampled_states)
     number_safe_hist = np.array(number_safe_hist)
     trial_hz = np.array(trial_hz) 
     safety_hist = np.array(safety_hist) 
     costs = np.array(costs)
     timestep_reached = np.array(timestep_reached)
-    global_us = np.array(global_us)
+    # global_us = np.array(global_us)
     time_taken = np.array(time_taken)
     mpc_times = np.array(mpc_times)
     mppi_times = np.array(mppi_times)
     topo_times = np.array(topo_times)
     percent_safe_hist = np.array(percent_safe_hist)
 
-    tmp_states = states[::plot_every_k_frames]
-    tmp_global_us = global_us[::plot_every_k_frames]
-    tmp_sampled_states = total_sampled_states[::plot_every_k_frames]
-    tmp_con_states = total_con_states[::plot_every_k_frames]
-    # number_safe_avg = number_safe_avg / (T/dt)
-    # caption = f"Total Time: {time.time()-start_time:.2f}\n" \
-    #         + f"Controller Frequency: {trial_hz:.2f} hz\n" \
-    #         + f"Safe Timestep Percent: {not_inf/(T/dt*trials)}\n" \
     pic = plot_utils.plot_simulation_result(states, obs, safe_zones, text="", safe_hist=safety_hist, max_arrows=10)
     pic_name = os.path.join(foldername,f'nested_mppi_{alg}_{counter}.png')
     percent_safe_name = os.path.join(foldername, f'percent_safe_trajectories_{alg}_{counter}.png')
-    contingency_gif_name = os.path.join(foldername, f'nested_mppi_con_{alg}_{counter}.gif')
-    samples_gif_name = os.path.join(foldername, f'nested_mppi_sampled_{alg}_{counter}.gif')
+    # contingency_gif_name = os.path.join(foldername, f'nested_mppi_con_{alg}_{counter}.gif')
+    # samples_gif_name = os.path.join(foldername, f'nested_mppi_sampled_{alg}_{counter}.gif')
     npz_name = os.path.join(foldername, f'sim_results_{alg}_{counter}')
     
     np.savez(npz_name, 
@@ -532,7 +500,7 @@ def gen_and_save_results(params, outputs, foldername, counter, alg="mpc_ais"):
             safety_hist=safety_hist,
             costs=costs,
             timestep_reached=timestep_reached,
-            global_us=global_us,
+            # global_us=global_us,
             time_taken=time_taken,
             percent_safe_hist=percent_safe_hist,
             mpc_times=mpc_times,
@@ -570,16 +538,10 @@ def main(args):
         params_copy = copy.deepcopy(params)
         
         # try:
+        outputs5= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], base_alg=True, solver=solver)
         outputs4= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_mpc=False, ais_iters= 1, solver=solver)
-        # outputs3= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_mpc=True, ais_iters=5, solver=solver)
         outputs2= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_mpc=False, ais_iters= 0, solver=solver)
         outputs1= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], do_mpc=True, ais_iters=0, solver=solver)
-        # outputs5= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], base_alg=True, do_mpc=False, heuristic_weight=3, solver=solver)
-        # outputs6= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], base_alg=True, do_mpc=False, heuristic_weight=30, solver=solver)
-        # outputs7= do_mppi_ais_mpc(copy.deepcopy(params), rng_keys[trial], base_alg=True, do_mpc=True, heuristic_weight=30, solver=solver)
-        # except Exception as e:
-        #     # breakpoint()
-        #     pass
 
         foldername, counter = uniquify('sim_results')
         os.mkdir(foldername)   
@@ -595,20 +557,14 @@ def main(args):
             params_copy['QT'] = params_copy['QT'].tolist()
             params_copy['R'] = params_copy['R'].tolist()
             json.dump(params_copy, file)
+        gen_and_save_results(copy.deepcopy(params), outputs5, foldername, counter, alg="mpc")
+        plt.close('all')
         gen_and_save_results(copy.deepcopy(params), outputs1, foldername, counter, alg="mppi_mpc")
         plt.close('all')
         gen_and_save_results(copy.deepcopy(params), outputs2, foldername, counter, alg="mppi")
         plt.close('all')
-        # gen_and_save_results(copy.deepcopy(params), outputs3, foldername, counter, alg="mppi_mpc_ais")
-        # plt.close('all')
         gen_and_save_results(copy.deepcopy(params), outputs4, foldername, counter, alg="mppi_ais")
         plt.close('all')
-        # gen_and_save_results(copy.deepcopy(params), outputs5, foldername, counter, alg="mppi_heuristic_3")
-        # plt.close('all')
-        # gen_and_save_results(copy.deepcopy(params), outputs6, foldername, counter, alg="mppi_heuristic_30")
-        # plt.close('all')
-        # gen_and_save_results(copy.deepcopy(params), outputs7, foldername, counter, alg="mppi_heuristic_30_mpc")
-        # plt.close('all')
 
 if __name__=="__main__":
     import argparse
