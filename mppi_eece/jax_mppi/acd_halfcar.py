@@ -221,11 +221,15 @@ def solve_trajectory(solver, x0, x_ref=None, obs_A=None, obs_b=None):
     
     return x_opt, u_opt
 
-def generate_car_sim(model, code_export_dir, time_step=0.001, num_stages=1, num_steps=1):
+def generate_car_sim(model, code_export_dir, time_step=0.001, num_stages=1, num_steps=1, parameters=None):
     # model, c, q = create_car_model()
     sim = AcadosSim()
     sim.model = model
-
+    if parameters is not None:
+        # Directly assign to the parameter attribute 'p'
+        sim.parameter_values = parameters
+    else:
+        sim.parameter_values = np.zeros(model.p.shape)
     sim.solver_options.T = time_step
     sim.solver_options.integrator_type = "ERK"
     sim.solver_options.num_stages = num_stages

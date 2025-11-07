@@ -1,16 +1,10 @@
 import functools
 import jax
 import jax.numpy as jnp
-# from trajax import integrators
-# from trajax.experimental.sqp import shootsqp, util
-# from trajax.optimizers import ilqr
 import time
 from functools import partial
-
 import numpy as np
-# from branch_mppi.systems import NonlinerSystem
-from systems import NonlinerSystem
-# from branch_mppi.jax_mppi import plot_utils
+from mppi_eece.systems import NonlinerSystem
 import matplotlib.pyplot as plt
 import casadi as ca
 from casadi import SX, MX, DM
@@ -58,8 +52,8 @@ def linspace_theta_wrap_to_pi(start, end, steps=10) -> np.ndarray:
 def find_Nonlin_Controls(path,start, solver, dis, system, Nt, occupied, box, planner, ns=15, que=None, U=None):
     st = time.time()
     # t0 = time.perf_counter()
-    path = planner.cutToMax(path, dis)
-    path = planner.cutToSafe(path)
+    # path = planner.cutToMax(path, dis)
+    # path = planner.cutToSafe(path)
     if U is None:
         U =  np.kron(np.ones((1, Nt+1)), [0.0, system.control_bounds[1][1]]).ravel()
     u0 = U.reshape((-1,2))
@@ -96,7 +90,7 @@ def find_Nonlin_Controls(path,start, solver, dis, system, Nt, occupied, box, pla
     np.array(A_np).reshape(-1,2), 
     np.array(b_np).reshape(-1),
     rX0.reshape(-1,),
-    0.0)     
+    1.0)     
     # dt = time.perf_counter() - t0
     print(f"[find_Nonlin_Controls] solver took {time.time()-st:.3f} s")  
     x_sol = np.array(x_sol).reshape((-1,3))
