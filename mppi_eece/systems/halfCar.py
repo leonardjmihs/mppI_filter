@@ -1,14 +1,13 @@
 import numpy as np
-from typing import Tuple, Optional, List, Dict
-from .nonlinear_system import NonlinerSystem
+from typing import Tuple
 import jax.numpy as jnp
-import jax
 import numpy as np
 import casadi as ca
-from casadi import sin, cos, MX, vertcat, atan, sign
+from casadi import MX, vertcat
 from acados_template import AcadosModel
-import functools
 from .base import System
+import functools
+import jax
 
 class HalfCar(System):
     """
@@ -17,8 +16,9 @@ class HalfCar(System):
     N_DIMS = 3
     N_CONTROLS = 2
 
-    def __init__(self, params):
-        self.params = params
+    def __init__(self, nominal_params, dt):
+        super().__init__(nominal_params, dt)
+        
     @property
     def n_dims(self) -> int:
         return HalfCar.N_DIMS
@@ -39,6 +39,7 @@ class HalfCar(System):
         ub = np.array([jnp.pi/3, 4.0])
         return (lb, ub)
 
+    @functools.partial(jax.jit, static_argnums=(0,))
     def dynamics_jax(self, state, control, dt=None, params=None):
         """JAX-compatible dynamics function."""
         if dt is None:
@@ -86,9 +87,9 @@ class HalfCar(System):
         model.name = 'halfcar'
         # CasADi Model
         # states
-        if constants is None:
-            constants = {'L': 2.0} 
-        L = constants["L"]
+        if params is None:
+            params = {'L': 2.0} 
+        L = params["L"]
         X = MX.sym("X")
         Y = MX.sym("Y")
         theta = MX.sym("theta")
@@ -105,7 +106,7 @@ class HalfCar(System):
         )
         model.p = vertcat([])
         model.x0 = np.array([0, 0, 0])
-        model.xdot = auto_xdot(model.x)
+        model.xdot = System.auto_xdot(model.x)
         # right hand side for differential equations
         model.f_expl_expr = vertcat(
             v * ca.cos(theta),  # = X_dot
