@@ -1,3 +1,4 @@
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -8,18 +9,21 @@ from tqdm import tqdm
 import time
 import functools
 from mppi_eece.systems import Unicycle
-from mppi_eece.jax_mppi.grid import OccupGrid
-from mppi_eece.jax_mppi.topo_prm import TopoPRM
+from mppi_eece.planners.grid import OccupGrid
+from mppi_eece.planners.topo_prm import TopoPRMPlanner
+from mppi_eece.planners.rrt_star import RRTStarPlanner
+from mppi_eece.planners.collision_checker import CollisionChecker
+from mppi_eece.planners.path_processor import PathProcessor
+from mppi_eece.planners.sampler import Sampler, EllipsoidSampler, UniformSampler
 from mppi_eece.jax_mppi.ca_mpc import *
 import cProfile
 import datetime
 import casadi as ca
 import os
 import json
-import copy 
-from mppi_eece.jax_mppi.mppi_planners import MPPI_Planner_Occup
-from mppi_eece.jax_mppi.collision_checker import CollisionChecker
-from mppi_eece.jax_mppi.do_mpc import find_mpc, gen_and_save_mpc_results, do_mpc
+import copy
+# from mppi_eece.planners.mppi_planners import MPPI_Planner_Occup
+# from mppi_eece.planners.do_mpc import find_mpc, gen_and_save_mpc_results, do_mpc
 from mppi_eece.jax_mppi.UKF_controller import do_ukf
 
 matplotlib.use('Agg')
@@ -164,7 +168,7 @@ def do_mppi(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic
     occupied = grid.find_all_occupied(obs)
     collision_checker = CollisionChecker(jnp.array(grid.occup_grid), origin, resolution, wh, occup_value=100)
     num_anci = 4
-    planner = TopoPRM(None, resolution=resolution, 
+    planner = TopoPRMPlanner(collision_checker=collision_checker, resolution=resolution, 
                       max_raw_path=10, 
                       max_raw_path2=10,
                       reserve_num=num_anci, 
@@ -172,10 +176,10 @@ def do_mppi(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic
                       sample_sz_p=0.0,
                       occup_value=100,
                       max_time=0.1)
-    planner.occup_grid = grid.occup_grid
-    planner.origin = origin
-    planner.resolution = resolution
-    planner.wh = wh
+    # planner.occup_grid = grid.occup_grid
+    # planner.origin = origin
+    # planner.resolution = resolution
+    # planner.wh = wh
     dis = nlmodel.control_bounds[1][1] * nlmodel.dt * Nt
     ns = 10
 
@@ -413,7 +417,7 @@ def main(args):
     problem_type = args.problem_type if hasattr(args, 'problem_type') else "random"
     trials = 1
     rng_keys = jax.random.split(jax.random.PRNGKey(0), trials)
-
+    np.random.seed(30)
     for trial in range(trials):
         if problem_type == "easy":
             params = easy_problem1()
@@ -424,8 +428,8 @@ def main(args):
         params_copy = copy.deepcopy(params)
         
         # MPC only
-        outputs_ukf = do_ukf(copy.deepcopy(params))
-        breakpoint()
+        # outputs_ukf = do_ukf(copy.deepcopy(params))
+        # breakpoint()
         outputs_mppi = do_mppi(copy.deepcopy(params), rng_keys[trial], base_alg=True, solver=solver)
         outputs_mpc = do_mpc(copy.deepcopy(params))
     

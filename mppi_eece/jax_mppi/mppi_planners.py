@@ -74,7 +74,7 @@ class MPPI_Planner_Occup:
         new_cost += jax.lax.cond(occupied_now, lambda _: jnp.inf, lambda _: 0.0, operand=None)
 
         path_blocked = cost_map.dda_path_check(sim_state[:2], new_state[:2])
-        new_cost += jax.lax.cond(path_blocked, lambda _: jnp.inf, lambda _: 0.0, operand=None)
+        new_cost += jax.lax.cond(path_blocked, lambda _: 10000.0, lambda _: 0.0, operand=None)
         min_dist = 0.0
 
         return (new_cost, new_state, q_ref, cost_map), (sim_state, min_dist)

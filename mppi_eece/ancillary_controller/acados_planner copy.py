@@ -6,9 +6,9 @@ import numpy as np
 from tqdm import tqdm
 import time
 import functools
-import mppi_eece.jax_mppi.plot_utils as plot_utils
+import mppi_eece.sim.plot_utils as plot_utils
 from mppi_eece.systems import HalfCar, Unicycle
-from mppi_eece.jax_mppi.grid import OccupGrid
+from mppi_eece.sim.grid import OccupGrid
 from mppi_eece.jax_mppi.rrt_star import RRTStar
 from mppi_eece.jax_mppi.ca_mpc import *
 from mppi_eece.jax_mppi.collision_checker import CollisionChecker
@@ -76,7 +76,7 @@ def find_controls(path, start, Nt, occupied, box, planner, solver, num_sides):
     x_sol = rotate_2dvectors(x_sol, -start[2], center=start[:2])
     x_sol[:,2] = wrap_to_pi(x_sol[:,2] + start[2])
     return x_sol, u_sol
-    
+
 class MPCPlanner:
     def __init__(self, params, do_profiling=False):
         self.params = params
