@@ -5,7 +5,7 @@ import numpy as np
 import casadi as ca
 from casadi import MX, vertcat
 from acados_template import AcadosModel
-from .base import System
+from .system_base import System
 import functools
 import jax
 

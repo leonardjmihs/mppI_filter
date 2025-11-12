@@ -1,25 +1,10 @@
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
-import matplotlib
 import numpy as np
-from mppi_eece.jax_mppi import plot_utils
 from tqdm import tqdm
-import time
-import functools
-from mppi_eece.systems import Unicycle
-from mppi_eece.jax_mppi.grid import OccupGrid
-from mppi_eece.jax_mppi.topo_prm import TopoPRM
-from mppi_eece.jax_mppi.ca_mpc import *
-import cProfile
-import datetime
-import casadi as ca
-import os
-import json
-import copy 
+from mppi_eece.sim.grid import OccupGrid
 from mppi_eece.jax_mppi.mppi_planners import MPPI_Planner_Occup
 from mppi_eece.jax_mppi.collision_checker import CollisionChecker
-from mppi_eece.jax_mppi.do_mpc import find_mpc, gen_and_save_mpc_results, do_mpc
 
 class UKF_Controller:
     def __init__(self, system, mppi_planner, alpha=1e-3, beta=2, kappa=0):

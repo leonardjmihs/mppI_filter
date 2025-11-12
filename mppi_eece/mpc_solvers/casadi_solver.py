@@ -1,4 +1,4 @@
-from .solvers_base import MPCSolver
+from .solvers_base import MPCSolver, MPCSolverParams
 import numpy as np
 import casadi as ca
 
@@ -10,7 +10,7 @@ class CasadiMPCSolver(MPCSolver):
     """
     def __init__(self, system, params=None):
         self.system = system
-        self.params = params if params is not None else {}
+        self.params = params if params is not None else MPCSolverParams()
         self.model = None
         self.solver = None
         self.last_params = None
@@ -18,24 +18,28 @@ class CasadiMPCSolver(MPCSolver):
 
     def get_solver(self, model=None):
         # Use provided model or get from system
-        if model is None and hasattr(self.system, 'create_casadi_model'):
+        if model is not None:
+            pass
+        elif self.model is None:
             dxdt, state, control = self.system.create_casadi_model()
             ode = ca.Function('ode', [state, control], [dxdt])
             model = (dxdt, state, control, ode)
-        # Only recreate solver if params or model have changed
+
+        self.model = model
         if self.solver is None or self.last_params != self.params or self.last_model != model:
-            self.model = model
             self.solver = self._create_solver(model, self.params)
-            self.last_params = self.params.copy()
+            self.last_params = self.params
             self.last_model = model
         return self.solver
 
     def _create_solver(self, model, params):
         # Fully integrate cas_shooting_solver logic
-        Nt = params.get('N', 40)
-        ns = params.get('num_sides', 6)
-        dt = params.get('dt', getattr(self.system, 'dt', 0.1))
-        solver_type = params.get('solver', 'ipopt')
+        Nt = params.Nt
+        ns = params.num_sides
+        Tf = params.T 
+        # dt = params.dt
+        dt = Tf/Nt
+        solver_type = params.solver if hasattr(params, 'solver') else 'ipopt'
         dxdt, state, control, ode = model
         opti = ca.Opti()
         x = opti.variable((Nt + 1)*3)
@@ -97,20 +101,20 @@ class CasadiMPCSolver(MPCSolver):
             opti.solver(solver_type.lower(),p_opts)
         return opti.to_function('F', [x, u, start, goal,  obs_A, obs_b, path, w_path], [x, u], ['x', 'u', 'start', 'goal', 'obs_A', 'obs_b', 'path', 'w_path'], ['x_opt', 'u_opt'])
 
-    def solve(self, x0, ref, parameters=None, obstacles=None):
+    def solve(self, x0, x_goal, reference=None, obstacles=None):
         # Use self.solver (CasADi function) to solve the MPC problem
         solver = self.get_solver(self.model)
-        Nt = self.params.get('N', 40)
-        ns = self.params.get('num_sides', 6)
+        Nt = self.params.Nt
+        ns = self.params.num_sides
         # Prepare initial guess and reference trajectory
-        x_ref = parameters.get('x_ref') if parameters and 'x_ref' in parameters else None
-        u_init = parameters.get('u_init') if parameters and 'u_init' in parameters else None
-        path = parameters.get('path') if parameters and 'path' in parameters else np.zeros((Nt+1, 3))
-        w_path = parameters.get('w_path') if parameters and 'w_path' in parameters else 0.0
+        x_ref = reference.get('x_ref') if reference and 'x_ref' in reference else None
+        u_init = reference.get('u_init') if reference and 'u_init' in reference else None
+        path = reference.get('path') if reference and 'path' in reference else np.zeros((Nt+1, 3))
+        w_path = reference.get('w_path') if reference and 'w_path' in reference else 0.0
         # Prepare obstacles
         if obstacles is not None:
-            A_per_node = obstacles.get('A_per_node')
-            b_per_node = obstacles.get('b_per_node')
+            A_per_node = obstacles.get('A')
+            b_per_node = obstacles.get('b')
         else:
             A_per_node = np.zeros((Nt+1, ns, 2))
             b_per_node = np.zeros((Nt+1, ns))
@@ -125,10 +129,10 @@ class CasadiMPCSolver(MPCSolver):
             x_ref = np.tile(np.zeros(3), (Nt+1, 1)).ravel()
         # Call solver function
         x_opt, u_opt = solver(
-            x_ref,
-            u_init,
+            x_ref.reshape(-1, 1),
+            u_init.reshape(-1,1),
             x0.reshape(1, -1),
-            ref.reshape(1, -1),
+            x_goal.reshape(1, -1),
             obs_A_flat,
             obs_b_flat,
             path.ravel(),
@@ -136,4 +140,49 @@ class CasadiMPCSolver(MPCSolver):
         )
         x_opt = np.array(x_opt).reshape((-1,3))
         u_opt = np.array(u_opt).reshape((-1,2))
+
+        # x_opt = upsample_mpc(x_res, self.params.T, self.params.Nt, self.params.dt, method="step")
+        # u_opt = upsample_mpc(u_res, self.params.T, self.params.Nt, self.params.dt, method="step")
         return x_opt, u_opt, 0
+
+def upsample_mpc(traj, T, Nt, dt, method="step"):
+    """
+    Upsample or interpolate a control trajectory to uniform time step `dt`.
+
+    Args:
+        traj: (Nt, control_dim) array of controls over horizon T
+        T: total duration of the trajectory
+        Nt: number of original control nodes
+        dt: desired upsample step size
+        method: "step" (zero-order hold) or "linear" (interpolation)
+
+    Returns:
+        up: (M, control_dim) array where M = floor(T / dt)
+    """
+    if traj is None:
+        return None
+
+    traj = np.asarray(traj)
+    control_dim = traj.shape[1]
+
+    # Original node times (uniform spacing)
+    original_times = np.linspace(0, T, Nt, endpoint=True)
+    
+    # Desired sample times (uniform spacing up to T)
+    desired_times = np.arange(0, T + 1e-9, dt)  # include last if close to T
+
+    if method == "step":
+        # For each desired time, find previous node index (step hold)
+        idx = np.searchsorted(original_times, desired_times, side="right") - 1
+        idx = np.clip(idx, 0, Nt - 1)
+        return traj[idx, :]
+
+    elif method == "linear":
+        # Linear interpolation per control dimension
+        up = np.empty((len(desired_times), control_dim))
+        for d in range(control_dim):
+            up[:, d] = np.interp(desired_times, original_times, traj[:, d])
+        return up
+
+    else:
+        raise ValueError(f"Unknown interpolation method: {method}")

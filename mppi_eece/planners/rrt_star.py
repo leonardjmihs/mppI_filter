@@ -1,12 +1,9 @@
-from .base import Planner
-# ...existing imports from jax_mppi/rrt_star.py...
-
 import numpy as np
 import math
 import time
 from scipy.spatial import cKDTree
-from planners.base import Planner
-from planners.sampler import Sampler
+from .planner_base import Planner
+from .sampler import Sampler, UniformSampler
 
 class Node:
     def __init__(self, pos, parent=None):
@@ -30,7 +27,6 @@ class RRTStarPlanner(Planner):
         self.node_list = []
         # Use provided sampler or default to UniformSampler
         if sampler is None:
-            from planners.sampler import UniformSampler
             self.sampler = UniformSampler()
         else:
             self.sampler = sampler
@@ -92,7 +88,7 @@ class RRTStarPlanner(Planner):
         path = self.generate_final_path(self.end_node)
         if path is None:
             return None
-        return path
+        return [path]
 
     # get_random_node is now deprecated; sampling is handled by self.sampler
 
@@ -175,7 +171,33 @@ class RRTStarPlanner(Planner):
     def calc_new_cost(self, from_node, to_node):
         d, _ = self.calc_distance_and_angle(from_node, to_node)
         return from_node.cost + d
+        
+    def discretizePath(self, path, pt_num):
+        # breakpoint()
+        len_list = [0.0]
+        for i in range(len(path)-1):
+            length = np.linalg.norm(path[i+1] - path[i])
+            len_list.append(length+len_list[i])
+        len_total = len_list[-1]
+        dl = len_total / (pt_num-1.0)
+        cur_l = 0.0
+        dis_path = []
+        path_idx = []
+        for i in range(pt_num) :
+            cur_l = i * dl
+            idx = -1
+            for j in range(len(len_list)-1):
+                if (cur_l >= len_list[j] - 1e-4) and cur_l <= len_list[j+1] + 1e-4:
+                    idx = j
+                    break
+            l = (cur_l - len_list[idx]) / (len_list[idx+1] - len_list[idx])
+            # breakpoint()
+            inter_pt = (1-l) * path[idx] + l * path[idx+1]
+            dis_path.append(inter_pt)
+            path_idx.append(idx)
 
+        # path_idx.append(len(path))
+        return dis_path, path_idx
     @staticmethod
     def get_nearest_node_index(node_list, rnd_node):
         dlist = [np.linalg.norm(node.pos - rnd_node.pos) for node in node_list]

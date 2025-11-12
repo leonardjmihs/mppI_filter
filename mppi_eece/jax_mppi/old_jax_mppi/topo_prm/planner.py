@@ -17,7 +17,7 @@ from .graph import GraphBuilder
 from .search import PathSearcher
 from .path_processor import PathProcessor
 from .nodes import Node
-from .. collision_checker import CollisionChecker
+from ..collision_checker import CollisionChecker
 
 
 class TopoPRM:

@@ -64,7 +64,7 @@ class MPPI_Planner_Occup:
         '''
         u = params
         cost, sim_state, q_ref, cost_map = carry
-        new_state = self.system.jax_dynamics(sim_state, u, 0, self.system.dt, self.system.nominal_params)
+        new_state = self.system.dynamics_jax(sim_state, u, self.system.dt, self.system.nominal_params)
         dist = sim_state - q_ref
         # dx = jnp.dot(new_state - sim_state, jnp.dot(self.Q, new_state - sim_state))
         new_cost = cost + jnp.dot(dist, jnp.dot(self.Q, dist))

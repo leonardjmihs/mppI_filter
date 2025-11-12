@@ -1,30 +1,26 @@
-
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import matplotlib
 import numpy as np
-from mppi_eece.jax_mppi import plot_utils
+from mppi_eece.sim import plot_utils
 from tqdm import tqdm
 import time
 import functools
 from mppi_eece.systems import Unicycle
-from mppi_eece.planners.grid import OccupGrid
-from mppi_eece.planners.topo_prm import TopoPRMPlanner
-from mppi_eece.planners.rrt_star import RRTStarPlanner
-from mppi_eece.planners.collision_checker import CollisionChecker
-from mppi_eece.planners.path_processor import PathProcessor
+from mppi_eece.sim.grid import OccupGrid
+from mppi_eece.ancillary_controller import AncillaryController
+from mppi_eece.jax_mppi.collision_checker import CollisionChecker
 from mppi_eece.planners.sampler import Sampler, EllipsoidSampler, UniformSampler
-from mppi_eece.jax_mppi.ca_mpc import *
 import cProfile
 import datetime
 import casadi as ca
 import os
 import json
 import copy
-# from mppi_eece.planners.mppi_planners import MPPI_Planner_Occup
-# from mppi_eece.planners.do_mpc import find_mpc, gen_and_save_mpc_results, do_mpc
-from mppi_eece.jax_mppi.UKF_controller import do_ukf
+from mppi_eece.jax_mppi.mppi_planners import MPPI_Planner_Occup
+from mppi_eece.sim.do_mpc import gen_and_save_mpc_results, do_mpc
+from mppi_eece.sim.UKF_controller import do_ukf
 
 matplotlib.use('Agg')
 
@@ -168,25 +164,38 @@ def do_mppi(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic
     occupied = grid.find_all_occupied(obs)
     collision_checker = CollisionChecker(jnp.array(grid.occup_grid), origin, resolution, wh, occup_value=100)
     num_anci = 4
-    planner = TopoPRMPlanner(collision_checker=collision_checker, resolution=resolution, 
-                      max_raw_path=10, 
-                      max_raw_path2=10,
-                      reserve_num=num_anci, 
-                      ratio_to_short=2.0,
-                      sample_sz_p=0.0,
-                      occup_value=100,
-                      max_time=0.1)
+    planner_params={'reserve_num':num_anci,
+                    'max_raw_path':10,
+                    'max_raw_path2':10,
+                    'ratio_to_short':2.0,
+                    'sample_sz_p':0.0,
+                    'occup_value':100,
+                    'max_time':0.1}
+
+    ancillary_controller = AncillaryController(mpc_params=params, 
+                                               planner_params=planner_params, 
+                                               solver_type='acados',
+                                               planner_type='topo_prm')
+
+    # planner = TopoPRMPlanner(collision_checker=collision_checker, resolution=resolution, 
+    #                   max_raw_path=10, 
+    #                   max_raw_path2=10,
+    #                   reserve_num=num_anci, 
+    #                   ratio_to_short=2.0,
+    #                   sample_sz_p=0.0,
+    #                   occup_value=100,
+    #                   max_time=0.1)
     # planner.occup_grid = grid.occup_grid
     # planner.origin = origin
     # planner.resolution = resolution
     # planner.wh = wh
-    dis = nlmodel.control_bounds[1][1] * nlmodel.dt * Nt
-    ns = 10
+    # dis = nlmodel.control_bounds[1][1] * nlmodel.dt * Nt
+    # ns = 10
 
-    dxdt, state, control = nlmodel.cas_ode()
-    ode = ca.Function('ode', [state, control], [dxdt]) 
-    f = cas_shooting_solver(nlmodel, int(Nt/2), ns=ns, dt=nlmodel.dt*2, ode=ode, solver=solver)
-    box = np.array([[1, 2]])
+    # dxdt, state, control = nlmodel.cas_ode()
+    # ode = ca.Function('ode', [state, control], [dxdt]) 
+    # f = cas_shooting_solver(nlmodel, int(Nt/2), ns=ns, dt=nlmodel.dt*2, ode=ode, solver=solver)
+    # box = np.array([[1, 2]])
     timestep_reached = -1
 
     mppi_planner = MPPI_Planner_Occup(sigma=sigma0,
@@ -207,39 +216,30 @@ def do_mppi(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic
     timestep_prog = tqdm(np.arange(0, T, dt))
     iter = 0
 
-    def eval_trajectory(u_seq, start, system, Nt, q_ref):
-        state = start
-        cost = 0
-        for t in range(Nt):
-            u = u_seq[t, :]
-            state = system.dynamics(state, u, 0, dt=dt, params=system.nominal_params)
-            cost = cost + (state - q_ref) @ Q @ (state - q_ref) + u @ R @ u
-        cost = cost + (state - q_ref) @ QT @ (state - q_ref)
-        return cost
-
     sampled_states = []
     for t in timestep_prog:
         rng_key, subkey = jax.random.split(rng_key)
         U_anci = np.tile(np.array(global_U), [num_anci+1, 1])
         if not base_alg:
             if do_mpc:
-                find_controls = functools.partial(find_Nonlin_Controls, 
-                                                  start=sim_state, 
-                                                  solver=f, 
-                                                  dis=dis, 
-                                                  system=nlmodel, 
-                                                  Nt=int(Nt/2), occupied=occupied, box=box, planner=planner, ns=ns)
-                paths, _ = planner.findTopoPaths(sim_state, q_ref, reset=True) 
-
-                if paths is not None:
-                    num_paths = len(paths) 
-                    for i, path in enumerate(paths):
-                        x_sol, u_sol, _ = find_controls(path)
-                        u_sol = np.repeat(u_sol, repeats=2, axis=0)
-                        try:
-                            U_anci[i+1, :] = u_sol[:Nt, :].reshape((Nt*2))
-                        except:
-                            breakpoint()
+                all_planner_paths, all_mpc_paths, all_control_sequences = ancillary_controller.plan_multi(
+                                    start=sim_state, q_ref=q_ref, occupied=occupied, collision_checker=collision_checker)
+                for control_seq in all_control_sequences:
+                    u_sol = control_seq
+                    try:
+                        U_anci[i+1, :] = u_sol[:Nt, :].reshape((Nt*2))
+                    except:
+                        breakpoint()
+                # paths, _ = planner.findTopoPaths(sim_state, q_ref, reset=True) 
+                # if paths is not None:
+                #     num_paths = len(paths) 
+                #     for i, path in enumerate(paths):
+                #         x_sol, u_sol, _ = find_controls(path)
+                #         u_sol = np.repeat(u_sol, repeats=2, axis=0)
+                #         try:
+                #             U_anci[i+1, :] = u_sol[:Nt, :].reshape((Nt*2))
+                #         except:
+                #             breakpoint()
         outputs = mppi_planner.mppi_mmodal(sim_state, global_U, U_anci, subkey, q_ref, collision_checker)
         best_u = outputs[0]
         new_u = outputs[1]
@@ -250,10 +250,10 @@ def do_mppi(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic
         all_state_seq = outputs[6]
 
 
-        cost = eval_trajectory(outputs[1], sim_state, nlmodel, Nt, q_ref)
+        cost, _ = ancillary_controller.eval_trajectory(outputs[1], sim_state, q_ref, dt=dt)
 
         for i in range(ratio_sim_mppi):
-            sim_state = nlmodel.dynamics(sim_state, best_u[0], 0, dt=dt/ratio_sim_mppi, params=nlmodel.nominal_params)
+            sim_state = nlmodel.dynamics_jax(sim_state, best_u[0], dt=dt/ratio_sim_mppi, params=nlmodel.nominal_params)
             dist = np.linalg.norm((sim_state - q_ref)[0:2])
             if (dist<0.5) and timestep_reached==-1:
                 timestep_reached = t / dt
@@ -272,24 +272,24 @@ def do_mppi(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic
             timestep_reached, 
             global_us,)
 
-def upsample_mpc_controls(u_mpc, T, Nt, dt, method="step"):
-    if u_mpc is None:
-        return None
-    u_mpc = np.asarray(u_mpc)
-    control_dim = u_mpc.shape[1]
-    times = np.arange(0, T, dt)
-    if method == "step":
-        mpc_dt = T / float(Nt)
-        idx = np.floor(times / mpc_dt).astype(int)
-        idx = np.clip(idx, 0, Nt - 1)
-        return u_mpc[idx, :]
-    else:
-        # linear interpolation per control dimension
-        t_mpc = np.linspace(0, T, Nt, endpoint=False)
-        up = np.zeros((len(times), control_dim))
-        for d in range(control_dim):
-            up[:, d] = np.interp(times, t_mpc, u_mpc[:, d])
-        return up
+# def upsample_mpc_controls(u_mpc, T, Nt, dt, method="step"):
+#     if u_mpc is None:
+#         return None
+#     u_mpc = np.asarray(u_mpc)
+#     control_dim = u_mpc.shape[1]
+#     times = np.arange(0, T, dt)
+#     if method == "step":
+#         mpc_dt = T / float(Nt)
+#         idx = np.floor(times / mpc_dt).astype(int)
+#         idx = np.clip(idx, 0, Nt - 1)
+#         return u_mpc[idx, :]
+#     else:
+#         # linear interpolation per control dimension
+#         t_mpc = np.linspace(0, T, Nt, endpoint=False)
+#         up = np.zeros((len(times), control_dim))
+#         for d in range(control_dim):
+#             up[:, d] = np.interp(times, t_mpc, u_mpc[:, d])
+#         return up
 
 def compare_mppi_to_mpc(mppi_outputs, params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic_weight=0.0, solver="ipopt"):
 
@@ -318,33 +318,28 @@ def compare_mppi_to_mpc(mppi_outputs, params, rng_key, do_mpc=True, ais_iters=0,
     optimal_us = []
     optimal_states = []
     optimal_costs = []
-    def eval_trajectory(u_seq, start, q_ref):
-        state = start
-        cost = 0
-        states = [start]
-        for t in range(Nt):
-            u = u_seq[t, :]
-            for i in range(10):
-                state = nlmodel.dynamics(state, u, 0, dt=T/Nt/10, params=nlmodel.nominal_params)
-            cost = cost + (state - q_ref) @ Q @ (state - q_ref) + u @ R @ u
-            states.append(state)
-        cost = cost + (state - q_ref) @ QT @ (state - q_ref)
-        return cost, states
 
-    solver = None
+    ancillary_controller = AncillaryController(mpc_params=params, 
+                                               solver_type='acados',
+                                               planner_type='rrt')
     for i in range(len(states)-1):
-        best_cost, best_u_sol, best_states, all_planner_paths, all_mpc_paths,solver = find_mpc(states[i],
-                        q_ref,
-                        Nt,
-                        T,
-                        occupied,
-                        Q=Q,
-                        QT=QT,
-                        R=R,
-                        collision_checker=collision_checker,
-                        eval_trajectory=eval_trajectory,
-                        num_sides=9,
-                        solver=solver)
+        best_cost, best_u_sol, best_states, all_planner_paths, all_mpc_paths = ancillary_controller.plan_best(
+                                                    start,
+                                                    q_ref,
+                                                    occupied,
+                                                    collision_checker=collision_checker)
+        # best_cost, best_u_sol, best_states, all_planner_paths, all_mpc_paths,solver = find_mpc(states[i],
+        #                 q_ref,
+        #                 Nt,
+        #                 T,
+        #                 occupied,
+        #                 Q=Q,
+        #                 QT=QT,
+        #                 R=R,
+        #                 collision_checker=collision_checker,
+        #                 eval_trajectory=eval_trajectory,
+        #                 num_sides=9,
+        #                 solver=solver)
             
         optimal_us.append(best_u_sol)
         optimal_costs.append(best_cost)
@@ -361,9 +356,7 @@ def compare_mppi_to_mpc(mppi_outputs, params, rng_key, do_mpc=True, ais_iters=0,
         # skip if MPC failed to produce a control sequence
         if u_mpc is None:
             continue
-        u_mpc_up = upsample_mpc_controls(u_mpc, T, Nt, params['dt'], method="step")
-        if u_mpc_up is None:
-            continue
+
 
         # corresponding MPPI control sequence at this timestep
         try:
@@ -373,10 +366,10 @@ def compare_mppi_to_mpc(mppi_outputs, params, rng_key, do_mpc=True, ais_iters=0,
             continue
 
         # align lengths (compare up to the shorter horizon)
-        L = min(len(u_mpc_up), len(u_mppi))
+        L = min(len(u_mpc), len(u_mppi))
         if L <= 0:
             continue
-        err = rmse(u_mpc_up[:L], u_mppi[:L])
+        err = rmse(u_mpc[:L], u_mppi[:L])
         rmse_per_timestep.append(err)
 
     # summary stats

@@ -5,8 +5,8 @@ class System:
     Abstract base class for dynamical systems.
     Should be JAX compatible and provide CasADi/ACADOS conversion methods.
     """
-    def __init__(self, params, dt):
-        self.params = params # params for system
+    def __init__(self, nominal_params, dt):
+        self.nominal_params = nominal_params # params for system
         self.dt = dt # default timestep
 
     @staticmethod
