@@ -170,12 +170,10 @@ class TopoPRM:
         self.sample_sz_p = sample_sz_p
         self.footprint = np.array(footprint)
     
-    def findTopoPaths(
+    def plan(
         self,
         start: Union[npt.NDArray[np.floating], List[float]],
         end: Union[npt.NDArray[np.floating], List[float]],
-        start_pts: List[Any] = [],
-        end_pts: List[Any] = [],
         reset: bool = True
     ) -> Tuple[Optional[List[List[npt.NDArray[np.floating]]]], List[npt.NDArray[np.floating]]]:
         """
@@ -255,15 +253,17 @@ class TopoPRM:
             # Update existing graph with new start/goal
             if self.enable_timing:
                 t_update_start = time.perf_counter()
-            self.graph = self.graph_builder.update_start_goal(
+            self.graph, reset_flag = self.graph_builder.update_start_goal(
                 self.graph, start, end
             )
             if self.enable_timing:
                 self.timing_stats['graph_update'] = time.perf_counter() - t_update_start
             # Add more samples
-            self.graph, samples = self.graph_builder.create_graph(
-                self.sampler, start, end, self.graph
-            )
+            samples = []
+            if reset_flag:
+                self.graph, samples = self.graph_builder.create_graph(
+                    self.sampler, start, end, self.graph
+                )
         
         if self.enable_timing:
             self.timing_stats['graph_construction'] = time.perf_counter() - t_graph_start

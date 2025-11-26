@@ -31,7 +31,7 @@ class RRTStarPlanner(Planner):
         else:
             self.sampler = sampler
 
-    def plan(self, start, goal, obstacles=None):
+    def plan(self, start, goal,reset=True):
         self.start_node = Node(start)
         self.end_node = Node(goal)
         self.node_list = [self.start_node]

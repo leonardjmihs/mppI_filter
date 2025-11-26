@@ -63,9 +63,9 @@ class AncillaryController:
                     max_time=planner_params.get('max_time', 0.05),
                     )
 
-    def plan_best(self, start, q_ref, occupied, collision_checker):
+    def plan_best(self, start, q_ref, occupied, collision_checker,reset=False):
         self.planner.collision_checker = collision_checker
-        paths = self.planner.plan(start, q_ref, obstacles=occupied)
+        paths = self.planner.plan(start, q_ref, reset=reset)
 
         best_cost = np.inf
         best_u_sol, best_states = None, None
@@ -93,9 +93,9 @@ class AncillaryController:
         best_states = best_states[:self.Nt, :]
         return best_cost, best_u_sol, best_states, all_planner_paths, all_mpc_paths
 
-    def plan_multi(self, start, q_ref, occupied, collision_checker):
+    def plan_multi(self, start, q_ref, occupied, collision_checker, reset=False):
         self.planner.collision_checker = collision_checker
-        paths = self.planner.plan(start, q_ref, obstacles=occupied)
+        paths = self.planner.plan(start, q_ref, reset=reset)
 
         best_cost = np.inf
         best_u_sol, best_states = None, None

@@ -3,19 +3,19 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import matplotlib
 import numpy as np
-from jax_mppi import plot_utils
+from mppi_eece.sim import plot_utils
 from tqdm import tqdm
 import time
 import functools
 from systems import Unicycle, Unicycle_HJ
-from jax_mppi.grid import OccupGrid
+from mppi_eece.sim.grid import OccupGrid
 from jax_mppi.topo_prm import TopoPRM
 from jax_mppi.ca_mpc import *
 import casadi as ca
 import os
 import json
 import copy 
-from jax_mppi.nested_mppi_planners import  MPPI_Planner_Occup
+from mppi_eece.jax_mppi.mppi_planners import  MPPI_Planner_Occup
 import hj_reachability as hj
 # from jax_mppi.acd_halfcar import create_car_trajectory_solver, create_hcar_model, solve_trajectory
 # from jax_mppi.ca_mpc import rotate_2dvectors, wrap_to_pi
