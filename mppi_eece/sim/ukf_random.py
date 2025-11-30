@@ -21,6 +21,7 @@ import copy
 from mppi_eece.jax_mppi.mppi_planners import MPPI_Planner_Occup
 from mppi_eece.sim.do_mpc import gen_and_save_mpc_results, do_mpc
 from mppi_eece.sim.UKF_controller import do_ukf
+from mppi_eece.sim.ckf_controller import do_ckf
 
 matplotlib.use('Agg')
 
@@ -54,12 +55,14 @@ def trivial_problem1():
 
     min_control = np.array([-np.pi, -3.0])
     max_control = np.array([np.pi, 3.0])
-    params['obs'] = np.array([[-10,5.0,4.0]])
+    params['obs'] = np.array([[-15,5.0,4.0]])
 
     params['nlmodel'] = Unicycle({"lb": min_control, "ub": max_control}, dt=params['dt'])
     params['T'] = 24
     sigma0 = np.diag(np.array([np.pi/4, 1.0]))
-    params['sigma0'] = np.kron(np.eye(params['Nt']), sigma0)
+    # params['sigma0'] = np.kron(np.eye(params['Nt']), sigma0)
+    params['sigma0'] = np.kron(np.diag(1+np.arange(params['Nt'])[::-1]), sigma0)
+    breakpoint()
     params['temperature'] = 1.0
     params['Q'] = np.diag([1.0, 1.0, 0.0])
     params['QT'] = np.diag([5.0, 5.0, 0.0])
@@ -438,6 +441,8 @@ def main(args):
         print(params)
         # MPC only
         outputs_ukf = do_ukf(copy.deepcopy(params))
+        # outputs_ckf = do_ckf(copy.deepcopy(params))
+
         # MPPI only
         outputs_mppi = do_mppi(copy.deepcopy(params), rng_keys[trial], do_mpc=False)
 

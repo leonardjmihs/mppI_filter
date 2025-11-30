@@ -9,10 +9,10 @@ from mppi_eece.jax_mppi.collision_checker import CollisionChecker
 
 
 class UKF_Controller:
-    def __init__(self, system, mppi_planner, alpha=1e-3, beta=2, kappa=0,
+    def __init__(self, system, mppi_planner, alpha=1e-2, beta=2, kappa=0,
                  auto_reset: bool = True,
                  cov_trace_threshold: float = 1e8,
-                 innovation_threshold: float = 1e12,
+                 innovation_threshold: float = 1e10,
                  reset_P_scale: float = 1.0):
         """
         UKF for control sequence estimation (controls-only formulation)
@@ -290,7 +290,6 @@ class UKF_Controller:
             mu_new, P_new, innovation
         """
         # Predict
-        print(f"x_current: {x_current}, q_ref: {q_ref}")
         mu_pred, P_pred, sigma_pred = self.predict(mu, P, Q)
 
         # Update
@@ -316,7 +315,8 @@ class UKF_Controller:
                             self.system.control_bounds[0],
                             self.system.control_bounds[1])
         mu_new = theta_new.ravel()
-        
+        print(f"x_current: {x_current}, q_ref: {q_ref}, mu_new: {mu_new}")  # Debug print
+
         # Return sigma points as well so callers can record them
         return mu_new, P_new, innov, sigma_pred, (bool(was_reset) if self.auto_reset else False)
 
@@ -364,11 +364,11 @@ def do_ukf(params):
     # Initialize
     U_init = np.kron(np.ones((1, Nt)), [0.0, 1.0]).ravel()
     mu = jnp.array(U_init)
-    P = sigma0*100000  # Control uncertainty only
+    P = sigma0 # Control uncertainty only
     
     # Process and measurement noise
-    Q_process = sigma0  # Control drift
-    R_meas = 0.1  # Measurement noise variance
+    Q_process = sigma0*100  # Control drift
+    R_meas = 10.0 # Measurement noise variance
     
     # Simulate
     states = [start]
@@ -406,7 +406,6 @@ def do_ukf(params):
         # Simulate system
         x_current = nlmodel.dynamics_jax(x_current, u_opt,
                                      dt=dt, params=nlmodel.nominal_params)
-        print(u_opt) 
         states.append(x_current)
         # convert sigma points to state trajectories and store them
         # sigma_points: (n_sigma, n_theta) where n_theta = Nt * n_u
