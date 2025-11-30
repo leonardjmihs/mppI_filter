@@ -427,7 +427,8 @@ class CollisionChecker:
     def tree_flatten(self):
         # dynamic leaves go in first tuple, static in second
         dynamic = (self.occup_grid, self.origin)
-        static = (self.resolution, self.wh)
+        wh = tuple(self.wh) if isinstance(self.wh, np.ndarray) else self.wh
+        static = (self.resolution, wh)
         return dynamic, static
     
     @classmethod
