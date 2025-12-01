@@ -40,7 +40,7 @@ class System:
             Find the index of a casadi symbol by its name in a vertcat (vertical concatenation) of symbols.
             If the symbol is a vector instead of a scalar, this method returns the index range of the symbol.
         """
-        v_len = symbol_vector.size()[0]
+        v_len = symbol_vector.sizdse()[0]
         slice_start = 0
         for i in range(v_len):
             info = symbol_vector[slice_start:i + 1].info()

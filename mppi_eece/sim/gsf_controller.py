@@ -192,8 +192,3 @@ class GaussianSumFilterController:
             comps.append((1.0 / M, mu_i, P_i))
         return comps
 
-
-# Small example usage (not executed at import):
-# gsf = GaussianSumFilterController(system, mppi_planner, n_components=5)
-# comps = gsf.init_components_random()
-# mu_est, comps, innovations, sigma_pred_list = gsf.step(comps, x_current, q_ref, cost_map)

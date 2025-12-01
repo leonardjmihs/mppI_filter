@@ -160,9 +160,7 @@ def rand_problem1():
 
 def rmse(a, b):
     return np.sqrt(np.mean((a - b) ** 2))
-
-
-
+ 
 def do_mppi(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic_weight=0.0, solver="ipopt"):
     dt = params['dt']
     Nt = params['Nt']
@@ -439,10 +437,15 @@ def main(args):
             params = rand_problem1()
         params_copy = copy.deepcopy(params)
         
-        print(params)
         # MPC only
-        outputs_ukf = do_ukf(copy.deepcopy(params))
-        outputs_gsf = do_gsf(copy.deepcopy(params))
+        gsf_params = copy.deepcopy(params)
+        sigma0 = gsf_params['sigma0']
+        gsf_params['process_noises'] = [{"weight": 0.5, "Q":  sigma0*10},
+                                       {"weight": 0.5, "Q":  sigma0*100}]
+        gsf_params['measurement_noises'] = [{"weight": 0.5, "R":  10.0},
+                                            {"weight": 0.5, "R":  1.0}
+                                            ]
+        outputs_gsf = do_gsf(copy.deepcopy(gsf_params))
 
         # outputs_ckf = do_ckf(copy.deepcopy(params))
 
@@ -462,87 +465,81 @@ def main(args):
             params_copy['QT'] = params_copy['QT'].tolist()
             params_copy['R'] = params_copy['R'].tolist()
             json.dump(params_copy, file)
-        gen_and_save_mppi_results(copy.deepcopy(params), outputs_ukf, foldername, counter, alg="ukf")
-        # Plot UKF diagnostics (covariance trace, innovations, resets) into the results folder
+        gen_and_save_mppi_results(copy.deepcopy(params), outputs_gsf, foldername, counter, alg="ukf")
+        # Plot GSF MAP diagnostics (covariance norm, trace, innovation, mixture size) into the results folder
         try:
-            # outputs_ukf expected: (states, costs, sigma_sequences, cov_norms, cov_traces, innovations, reset_flags, cov_trace_threshold, innovation_threshold)
-            cov_traces = None
-            cov_norms = None
-            innovations = None
-            reset_flags = None
-            cov_thresh = None
-            innov_thresh = None
+            # outputs_gsf expected: (states, costs, trajs, cov_norms_map, cov_traces_map, innovations_map, num_gaussians)
+            cov_norms_map = None
+            cov_traces_map = None
+            innovations_map = None
+            num_gaussians = None
 
-            if isinstance(outputs_ukf, (tuple, list)) and len(outputs_ukf) >= 9:
-                _, _, _, cov_norms, cov_traces, innovations, reset_flags, cov_thresh, innov_thresh = outputs_ukf
-            elif isinstance(outputs_ukf, (tuple, list)) and len(outputs_ukf) >= 5:
-                # older fallback: (states, costs, sigma_sequences, cov_norms, reset_flags)
-                _, _, _, cov_norms, reset_flags = outputs_ukf
+            try:
+                _, _, _, cov_norms_map, cov_traces_map, innovations_map, num_gaussians = outputs_gsf
+            except Exception:
+                if len(outputs_gsf) >= 4:
+                    cov_norms_map = outputs_gsf[3]
+                if len(outputs_gsf) >= 5:
+                    cov_traces_map = outputs_gsf[4]
+                if len(outputs_gsf) >= 6:
+                    innovations_map = outputs_gsf[5]
+                if len(outputs_gsf) >= 7:
+                    num_gaussians = outputs_gsf[6]
 
-            # prefer plotting cov_trace if available
-            if cov_traces is not None:
-                fig, ax = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
-                ax[0].plot(cov_traces, label='cov trace')
-                if cov_thresh is not None:
-                    ax[0].axhline(cov_thresh, color='r', linestyle='--', label='cov_trace_thresh')
-                ax[0].set_ylabel('trace(P)')
-                ax[0].legend()
-                ax[0].grid(True)
+            # choose time axis
+            nsteps = 0
+            if cov_norms_map is not None:
+                nsteps = len(cov_norms_map)
+            elif cov_traces_map is not None:
+                nsteps = len(cov_traces_map)
+            elif innovations_map is not None:
+                nsteps = len(innovations_map)
+            elif num_gaussians is not None:
+                nsteps = len(num_gaussians)
 
-                if innovations is not None:
-                    ax[1].plot(np.abs(innovations), label='|innovation|')
-                    if innov_thresh is not None:
-                        ax[1].axhline(innov_thresh, color='r', linestyle='--', label='innovation_thresh')
-                else:
-                    ax[1].plot([], label='|innovation|')
+            times = list(range(nsteps))
 
-                # mark resets
-                if reset_flags is not None and innovations is not None:
-                    reset_idx = [i for i, v in enumerate(reset_flags) if v]
-                    if len(reset_idx) > 0:
-                        ax[1].plot(reset_idx, [np.abs(innovations[i]) for i in reset_idx], 'rx', label='resets')
+            fig, axs = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
 
-                ax[1].set_ylabel('innovation')
-                ax[1].set_xlabel('timestep')
-                ax[1].legend()
-                ax[1].grid(True)
+            if cov_norms_map is not None:
+                axs[0].plot(times, cov_norms_map, '-o', label='cov Frobenius norm')
+                axs[0].set_ylabel('||P||_F')
+            else:
+                axs[0].text(0.5, 0.5, 'no cov_norms available', ha='center')
+            axs[0].grid(True)
 
-                fig.tight_layout()
-                fig.savefig(os.path.join(foldername, 'ukf_cov_innov.png'))
-                plt.close(fig)
-            elif cov_norms is not None:
-                # fallback: plot cov Frobenius norm and attempt to plot innovations
-                fig, ax = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
-                ax[0].plot(cov_norms, label='cov Frobenius norm')
-                ax[0].set_ylabel('||P||_F')
-                ax[0].legend()
-                ax[0].grid(True)
+            if cov_traces_map is not None:
+                axs[1].plot(times, cov_traces_map, '-o', label='cov trace')
+                axs[1].set_ylabel('trace(P)')
+            else:
+                axs[1].text(0.5, 0.5, 'no cov_traces available', ha='center')
+            axs[1].grid(True)
 
-                if innovations is not None:
-                    ax[1].plot(np.abs(innovations), label='|innovation|')
-                else:
-                    ax[1].plot([], label='|innovation|')
+            if innovations_map is not None:
+                axs[2].plot(times, np.abs(innovations_map), '-o', label='|innovation|')
+                axs[2].set_ylabel('|innovation|')
+            else:
+                axs[2].text(0.5, 0.5, 'no innovations available', ha='center')
+            axs[2].grid(True)
 
-                if reset_flags is not None and innovations is not None:
-                    reset_idx = [i for i, v in enumerate(reset_flags) if v]
-                    if len(reset_idx) > 0:
-                        ax[1].plot(reset_idx, [np.abs(innovations[i]) for i in reset_idx], 'rx', label='resets')
+            if num_gaussians is not None:
+                axs[3].step(times, num_gaussians, where='post', label='num gaussians')
+                axs[3].set_ylabel('# gaussians')
+                axs[3].set_xlabel('timestep')
+            else:
+                axs[3].text(0.5, 0.5, 'no mixture size available', ha='center')
+            axs[3].grid(True)
 
-                ax[1].set_ylabel('innovation')
-                ax[1].set_xlabel('timestep')
-                ax[1].legend()
-                ax[1].grid(True)
-
-                fig.tight_layout()
-                fig.savefig(os.path.join(foldername, 'ukf_covnorm_innov.png'))
-                plt.close(fig)
+            fig.tight_layout()
+            fig.savefig(os.path.join(foldername, 'gsf_map_diagnostics.png'))
+            plt.close(fig)
         except Exception:
             # best-effort plotting; don't fail the run if plotting breaks
             pass
         gen_and_save_mppi_results(copy.deepcopy(params), outputs_mppi, foldername, counter, alg="mppi")
         # gen_and_save_mpc_results(copy.deepcopy(params), outputs_mpc, foldername, counter, alg="mpc")
 
-        outputs_mppi, outputs_ukf = compare_mppi_to_mpc(outputs_mppi, copy.deepcopy(params), rng_keys[trial], do_mpc=True, base_alg=True, solver=solver) 
+        outputs_mppi, outputs_gsf = compare_mppi_to_mpc(outputs_mppi, copy.deepcopy(params), rng_keys[trial], do_mpc=True, base_alg=True, solver=solver) 
         plt.close('all')
 
 if __name__ == "__main__":
