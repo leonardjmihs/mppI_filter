@@ -22,7 +22,7 @@ from mppi_eece.jax_mppi.mppi_planners import MPPI_Planner_Occup
 from mppi_eece.sim.do_mpc import gen_and_save_mpc_results, do_mpc
 from mppi_eece.sim.UKF_controller import do_ukf
 from mppi_eece.sim.ckf_controller import do_ckf
-from mppi_eece.sim.gsf_filter import do_gsf
+from mppi_eece.sim.gsf_controller import do_gsf
 # from mppi_eece.sim.ukf_filterpy import do_ukf_filterpy
 
 matplotlib.use('Agg')
@@ -57,7 +57,7 @@ def trivial_problem1():
 
     min_control = np.array([-np.pi, -3.0])
     max_control = np.array([np.pi, 3.0])
-    params['obs'] = np.array([[-15,5.0,4.0]])
+    params['obs'] = np.array([[-12,4.0,4.0]])
 
     params['nlmodel'] = Unicycle({"lb": min_control, "ub": max_control}, dt=params['dt'])
     params['T'] = 24
@@ -67,7 +67,7 @@ def trivial_problem1():
     params['temperature'] = 1.0
     params['Q'] = np.diag([1.0, 1.0, 0.0])
     params['QT'] = np.diag([5.0, 5.0, 0.0])
-    params['R'] = np.diag([0.1, 0.1])
+    params['R'] = np.diag([100.0, 0.1])
     return params
 
 def easy_problem1():
@@ -372,7 +372,6 @@ def compare_mppi_to_mpc(mppi_outputs, params, rng_key, do_mpc=True, ais_iters=0,
         if u_mpc is None:
             continue
 
-
         # corresponding MPPI control sequence at this timestep
         try:
             u_mppi = np.asarray(global_us[i])
@@ -403,15 +402,24 @@ def gen_and_save_mppi_results(params, outputs, foldername, counter, alg="mpc_ais
     sampled_states = outputs[2]
     
 
+    resolution = params.get("resolution", 0.5)
+    origin = np.array(params.get("origin", [-40, -10]))
+    wh = np.array(params.get("wh", [50 / resolution, 20 / resolution]), dtype=np.int32)
+    boundary = [[origin[0], origin[0] + wh[0] * resolution],
+                [origin[1], origin[1] + wh[1] * resolution]]
+    grid = OccupGrid(boundary, resolution)
+    grid.find_occupancy_grid(obs, buffer=0.05)
+    cost_map = CollisionChecker(np.array(grid.occup_grid), origin, resolution, wh, occup_value=100)
+
     states = np.array(states)
     costs = np.array(costs)
     sampled_states = np.array(sampled_states)
-    pic = plot_utils.plot_simulation_result(states, obs, goal=q_ref[:2], text="",  max_arrows=10)
+    pic = plot_utils.plot_simulation_result(states, obs, goal=q_ref[:2], text="",  max_arrows=10, costmap=cost_map)
     pic_name = os.path.join(foldername, f'mppi_{alg}_{counter}.png')
     gif_name = os.path.join(foldername, f'mppi_{alg}_{counter}.gif')
     percent_safe_name = os.path.join(foldername, f'mppi_{alg}_{counter}.png')
     npz_name = os.path.join(foldername, f'mppi_{alg}_{counter}')
-    anim = plot_utils.animate_simulation_with_sampled_states(states, obs,goal=q_ref[:2], sampled_xs=sampled_states)
+    anim = plot_utils.animate_simulation_with_sampled_states(states, obs,goal=q_ref[:2], sampled_xs=sampled_states, costmap=cost_map)
     anim.save(gif_name)
     np.savez(npz_name, 
              states=states,
@@ -440,11 +448,11 @@ def main(args):
         # MPC only
         gsf_params = copy.deepcopy(params)
         sigma0 = gsf_params['sigma0']
-        gsf_params['process_noises'] = [{"weight": 0.5, "Q":  sigma0*10},
-                                       {"weight": 0.5, "Q":  sigma0*100}]
-        gsf_params['measurement_noises'] = [{"weight": 0.5, "R":  10.0},
-                                            {"weight": 0.5, "R":  1.0}
-                                            ]
+        # gsf_params['process_noises'] = [{"weight": 0.5, "Q":  sigma0*100},
+        #                                {"weight": 0.5, "Q":  sigma0*1}]
+        # gsf_params['measurement_noises'] = [{"weight": 0.5, "R":  1.0},
+        #                                     {"weight": 0.5, "R":  0.1}
+        #                                     ]
         outputs_gsf = do_gsf(copy.deepcopy(gsf_params))
 
         # outputs_ckf = do_ckf(copy.deepcopy(params))
@@ -500,7 +508,6 @@ def main(args):
             times = list(range(nsteps))
 
             fig, axs = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
-
             if cov_norms_map is not None:
                 axs[0].plot(times, cov_norms_map, '-o', label='cov Frobenius norm')
                 axs[0].set_ylabel('||P||_F')

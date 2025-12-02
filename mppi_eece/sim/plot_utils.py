@@ -16,7 +16,7 @@ def determine_frame_bounds(fig):
     x_limits = ax.get_xlim()
     y_limits = ax.get_ylim()
     return x_limits, y_limits
-def plot_simulation_result(states, obs, goal=None, safe_zones=[], text="", max_arrows=30, safe_hist=None, mpc_paths=None, planner_paths=None):
+def plot_simulation_result(states, obs, goal=None, safe_zones=[], text="", max_arrows=30, safe_hist=None, mpc_paths=None, planner_paths=None, costmap=None):
     """
     Plot the trajectory and orientation of the car given the state history.
 
@@ -54,6 +54,10 @@ def plot_simulation_result(states, obs, goal=None, safe_zones=[], text="", max_a
         for path in mpc_paths:
             path = np.array(path)
             plt.plot(path[:, 0], path[:, 1], 'g-', alpha=0.5, label='MPC Path')
+
+    if costmap is not None:
+        occupied = costmap.get_all_nonzero()
+        plt.scatter(occupied[:,0], occupied[:,1], s=5, color="black", alpha=0.5, label="obstacles")
 
     # Plot the orientation at each point
     for i in range(0, len(states), int(len(states)/max_arrows)):  # Only plot 20 arrows for visibility
@@ -101,7 +105,7 @@ def plot_simulation_result(states, obs, goal=None, safe_zones=[], text="", max_a
     return fig
 
 
-def animate_simulation_with_sampled_states(states, obs, goal=None, safe_zones=[], sampled_xs=[], optimal_us=None, dynamics=None):
+def animate_simulation_with_sampled_states(states, obs, goal=None, safe_zones=[], sampled_xs=[], optimal_us=None, dynamics=None, costmap=None):
     if dynamics is None:
         print("errorr")
     def update(frame, states):
@@ -146,7 +150,9 @@ def animate_simulation_with_sampled_states(states, obs, goal=None, safe_zones=[]
         for zone in safe_zones:
             rect = plt.Rectangle((zone[0]-0.25, zone[1]-0.25), 0.5, 0.5)
             plt.gca().add_artist(rect)
-
+        if costmap is not None:
+            occupied = costmap.get_all_nonzero()
+            plt.scatter(occupied[:,0], occupied[:,1], s=5, color="black", alpha=0.5, label="obstacles")
         # Plot MPPI trajectories
         # breakpoint()
         if len(sampled_xs) > 0:
