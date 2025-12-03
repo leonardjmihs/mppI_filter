@@ -442,7 +442,7 @@ def main(args):
         print(params)
         # MPC only
         outputs_ukf = do_ukf(copy.deepcopy(params))
-        outputs_gsf = do_gsf(copy.deepcopy(params))
+        # outputs_gsf = do_gsf(copy.deepcopy(params))
 
         # outputs_ckf = do_ckf(copy.deepcopy(params))
 

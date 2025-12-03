@@ -18,7 +18,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from tqdm import tqdm
-import functools
 
 try:
     from mppi_eece.jax_mppi.mppi_planners import MPPI_Planner_Occup
@@ -35,9 +34,9 @@ class GSF_Controller_Expanded:
     def __init__(self, nlmodel, planner,
                  n_u=2,
                  N=10,
-                 Jmax=12,
                  wmin=1e-6,
                  gamma=4.0,
+                 Jmax=12,
                  ukf_alpha=1e-2, ukf_beta=2.0, ukf_kappa=0.0):
         self.nlmodel = nlmodel
         self.planner = planner
@@ -46,30 +45,67 @@ class GSF_Controller_Expanded:
         self.n_theta = self.N * self.n_u
 
         # mixture management params
-        self.wmin = wmin
-        self.gamma = gamma
-        self.Jmax = Jmax
+        self.wmin = float(wmin)
+        self.gamma = float(gamma)
+        self.Jmax = int(Jmax)
 
         # UKF sigma weights
         n = self.n_theta
-        self.alpha = ukf_alpha
-        self.beta = ukf_beta
-        self.kappa = ukf_kappa
-        self.lambda_ = self.alpha**2 * (n + self.kappa) - n
+        alpha = ukf_alpha
+        beta = ukf_beta
+        kappa = ukf_kappa
+        self.lambda_ = alpha**2 * (n + kappa) - n
         self.n_sigma = 2 * n + 1
         Wm = np.zeros(self.n_sigma)
         Wc = np.zeros(self.n_sigma)
         Wm[0] = self.lambda_ / (n + self.lambda_)
-        Wc[0] = self.lambda_ / (n + self.lambda_) + (1 - self.alpha**2 + self.beta)
+        Wc[0] = self.lambda_ / (n + self.lambda_) + (1 - alpha**2 + beta)
         for i in range(1, self.n_sigma):
             w = 1.0 / (2.0 * (n + self.lambda_))
             Wm[i] = w
             Wc[i] = w
-        self.Wm = Wm
-        self.Wc = Wc
+        # store as numpy arrays (treated as pytree leaves)
+        self.Wm = np.array(Wm, dtype=float)
+        self.Wc = np.array(Wc, dtype=float)
+
+    # make the controller a pytree so JAX can treat it consistently and avoid
+    # recompilations that come from objects changing identity/structure.
+    def tree_flatten(self):
+        # children: the numeric arrays we want to be traced
+        children = (self.Wm, self.Wc)
+        # aux: static Python objects (not traced)
+        aux = {
+            'n_u': self.n_u,
+            'N': self.N,
+            'wmin': self.wmin,
+            'gamma': self.gamma,
+            'Jmax': self.Jmax,
+            'lambda_': self.lambda_,
+            'n_sigma': self.n_sigma,
+            # do not include planner or nlmodel in children; keep them static
+            'nlmodel': self.nlmodel,
+            'planner': self.planner,
+        }
+        return children, aux
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        Wm, Wc = children
+        # reconstruct with aux metadata; caller must provide nlmodel and planner in aux
+        obj = cls(aux['nlmodel'], aux.get('planner', None), n_u=aux.get('n_u', 2), N=aux.get('N', 10),
+                  wmin=aux.get('wmin', 1e-6), gamma=aux.get('gamma', 4.0), Jmax=aux.get('Jmax', 12))
+        obj.Wm = np.array(Wm, dtype=float)
+        obj.Wc = np.array(Wc, dtype=float)
+        return obj
 
     # ---------------- utilities ----------------
-    
+    def shift_controls(self, theta):
+        """Shift control sequence as in previous code: roll sequence forward and repeat last."""
+        theta = theta.reshape((-1, self.n_u))
+        theta = np.roll(theta, -1, axis=0)
+        theta[-1, :] = theta[-2, :]  # keep last control (or replace with zeros if preferred)
+        return theta.ravel()
+
     def ensure_psd(self, P):
         """Make symmetric and add tiny jitter for numerical stability."""
         P = 0.5 * (P + P.T)
@@ -82,140 +118,61 @@ class GSF_Controller_Expanded:
         except Exception:
             return P + np.eye(P.shape[0]) * jitter
 
-    def shift_controls(self, theta):
-        """
-        Shift operator: Phi(theta)
-        Moves controls forward, duplicates last control
-        
-        Args:
-            theta: [2N] control sequence
-        Returns:
-            theta_new: [2N] shifted control sequence
-        """
-        theta_reshaped = theta.reshape((-1, self.n_u))
-        theta_shifted = jnp.roll(theta_reshaped, -1, axis=0)
-        # Keep last control
-        theta_shifted = theta_shifted.at[-1].set(theta_reshaped[-1])
-        return theta_shifted.ravel()
-    
     def generate_sigma_points(self, mu, P):
-        """
-        Generate sigma points using Cholesky decomposition
-        
-        Args:
-            mu: mean [n_theta]
-            P: covariance [n_theta, n_theta]
-        Returns:
-            sigma_points: [n_sigma, n_theta]
-        """
+        """Classic unscented sigma points (returned as numpy arrays)."""
         n = self.n_theta
-        
-        # Regularization for numerical stability
         P_reg = P + np.eye(n) * 1e-9
-        
         try:
             L = np.linalg.cholesky(P_reg)
-        except:
-            # Fallback to eigendecomposition
-            eigvals, eigvecs = np.linalg.eigh(P_reg)
-            eigvals = np.maximum(eigvals, 1e-9)
-            L = eigvecs @ np.diag(np.sqrt(eigvals))
+        except np.linalg.LinAlgError:
+            vals, vecs = np.linalg.eigh(P_reg)
+            vals = np.maximum(vals, 1e-9)
+            L = vecs @ np.diag(np.sqrt(vals))
 
-        L_scaled = np.sqrt(n + self.lambda_) * L
-
-        # Generate sigma points
-        sigma_points = np.zeros((self.n_sigma, n))
-        # sigma_points = sigma_points.at[0].set(mu)
-        # sigma_points[0] = sigma_points.at[0].set(mu)
-        sigma_points[0] = mu
-        
+        scale = np.sqrt(n + self.lambda_)
+        Ls = L * scale  # broadcasting columns
+        sigma = np.zeros((self.n_sigma, n))
+        sigma[0, :] = mu
         for i in range(n):
-            # sigma_points = sigma_points.at[i+1].set(mu + L_scaled[:, i])
-            # sigma_points = sigma_points.at[n+i+1].set(mu - L_scaled[:, i])
-            sigma_points[i+1] = mu + L_scaled[:, i]
-            sigma_points[n+i+1] = mu - L_scaled[:, i]
-
-        return sigma_points
+            sigma[1 + i, :] = mu + Ls[:, i]
+            sigma[1 + n + i, :] = mu - Ls[:, i]
+        return sigma
 
     def measurement_function(self, theta, x_current, q_ref, cost_map):
         """Measurement = -cost evaluated by planner for a control sequence theta.
 
-        Use numpy on the host to call planner (non-JAX). Return a Python float.
+        This runs on the host (numpy) and calls the planner (non-JAX). Returning
+        a plain Python float avoids feeding Python objects into jitted/JAX code
+        which triggers recompilation.
         """
-        u_seq = jnp.array(theta).reshape((-1, self.n_u))
-        out = self.planner.eval_U_seq(u_seq, 
-                jnp.array(theta), 
-                jnp.array(x_current), 
-                jnp.array(q_ref), 
-                cost_map)
-        cost = out[0]
-        cost = jnp.clip(cost, 0.0, 1e12)
+        u_seq = np.array(theta).reshape((-1, self.n_u))
+        # planner.eval_U_seq typically returns (cost, terminal_state, state_seq, ...)
+        out = self.planner.eval_U_seq(u_seq, np.array(theta), np.array(x_current), np.array(q_ref), cost_map)
+        cost = float(out[0])
+        cost = np.clip(cost, 0.0, 1e10)
         return -cost
 
-    @functools.partial(jax.jit, static_argnums=(0,))
-    def measure_sigma(self, sigma_pts, x_current, q_ref, cost_map):
-        """Evaluate measurement function for all sigma points."""
-        meas_sigma = jax.vmap(
-            lambda theta: self.measurement_function(theta, x_current, q_ref, cost_map)
-        )(sigma_pts)
-        return meas_sigma
-
     # ---------------- predict & update for individual components ----------------
-    # def predict_component(self, mu, P, Q):
-    #     mu_pred = self.shift_controls(mu)
-    #     P_pred = P + Q
-    #     P_pred = self.ensure_psd(P_pred)
-    #     return mu_pred, P_pred
     def predict_component(self, mu, P, Q):
-        """
-        UKF Prediction step
-        
-        Args:
-            mu: current mean [n_theta]
-            P: current covariance [n_theta, n_theta]
-            Q: process noise covariance [n_theta, n_theta]
-        Returns:
-            mu_pred, P_pred, sigma_points_pred
-        """
-        # Generate sigma points
-        sigma_points = self.generate_sigma_points(mu, P)
-        
-        # Propagate through shift dynamics
-        sigma_points_pred = jax.vmap(self.shift_controls)(sigma_points)
-        
-        # Compute predicted mean
-        mu_pred = jnp.sum(self.Wm[:, None] * sigma_points_pred, axis=0)
-        
-        # Compute predicted covariance (use symmetric / jittered form for stability)
-        diff = sigma_points_pred - mu_pred
-        P_pred = jnp.sum(self.Wc[:, None, None] *
-                        (diff[:, :, None] @ diff[:, None, :]),
-                        axis=0) + Q
+        mu_pred = self.shift_controls(mu)
+        P_pred = P + Q
+        P_pred = self.ensure_psd(P_pred)
+        return mu_pred, P_pred
 
-        # enforce symmetry and add tiny jitter to preserve PD
-        P_pred = (P_pred + P_pred.T) / 2.0
-        P_pred = P_pred + jnp.eye(self.n_theta) * 1e-9
-
-        # defensive NaN check (kept but non-blocking)
-        if jnp.any(jnp.isnan(mu_pred)):
-            # don't breakpoint in library code; raise to signal upstream
-            raise RuntimeError("NaN in UKF predicted mean")
-
-        return mu_pred, P_pred, sigma_points_pred
-
-    def update_component_unscented(self, mu_pred, P_pred, sigma_pts, y_meas, R, x_current, q_ref, cost_map):
+    def update_component_unscented(self, mu_pred, P_pred, y_meas, R, x_current, q_ref, cost_map):
         """
         Unscented-style scalar measurement update for a component.
         Returns: mu_upd, P_upd, likelihood (scalar), y_pred, S
         """
-        # sigma_pts = self.generate_sigma_points(mu_pred, P_pred)
-        # Evaluate measurement for each sigma point on host to avoid JAX recompiles
-        meas_sigma = self.measure_sigma(sigma_pts, x_current, q_ref, cost_map)
-        Wm = np.array(self.Wm, dtype=float)
-        Wc = np.array(self.Wc, dtype=float)
-        y_pred = float(np.sum(Wm * meas_sigma))
+        sigma_pts = self.generate_sigma_points(mu_pred, P_pred)
+        # vectorize measurement fun for sigma points
+        # meas_sigma = np.array([self.measurement_function(s, x_current, q_ref, cost_map) for s in sigma_pts])
+        meas_sigma = jax.vmap(
+            lambda theta: self.measurement_function(theta, x_current, q_ref, cost_map)
+        )(sigma_pts)        
+        y_pred = np.sum(self.Wm * meas_sigma)
         meandiff = meas_sigma - y_pred
-        S = np.sum(self.Wc * (meandiff**2)) + (R if np.ndim(R) == 0 else float(R))
+        S = float(np.sum(Wc * (meandiff**2)) + (R if np.ndim(R) == 0 else float(R)))
         # compute cross-covariance (n_theta vector)
         state_diff = sigma_pts - mu_pred[None, :]
         P_xy = np.sum((self.Wc[:, None] * state_diff) * meandiff[:, None], axis=0)
@@ -223,10 +180,7 @@ class GSF_Controller_Expanded:
         innovation = y_meas - y_pred
         mu_upd = mu_pred + K * innovation
         P_upd = P_pred - np.outer(K, K) * S
-        # P_upd = self.ensure_psd(P_upd)
-
-        P_upd = (P_upd + P_upd.T) / 2.0
-        P_upd = P_upd + jnp.eye(self.n_theta) * 1e-9
+        P_upd = self.ensure_psd(P_upd)
         # scalar Gaussian likelihood
         denom = np.sqrt(2.0 * np.pi * S)
         expo = -0.5 * ((y_meas - y_pred) ** 2) / S
@@ -307,42 +261,9 @@ class GSF_Controller_Expanded:
 
     def manage_mixture(self, weights, mus, Ps):
         w_p, m_p, P_p = self.prune(weights, mus, Ps)
-        # w_m, m_m, P_m = self.merge(w_p, m_p, P_p)
-        # w_c, m_c, P_c = self.cap(w_m, m_m, P_m)
-        w_c, m_c, P_c = self.cap(w_p, m_p, P_p)
-        # breakpoint()
+        w_m, m_m, P_m = self.merge(w_p, m_p, P_p)
+        w_c, m_c, P_c = self.cap(w_m, m_m, P_m)
         return w_c, m_c, P_c
-
-    def _tree_flatten(self):
-        children = (self.wmin, self.gamma, self.alpha, self.beta, self.kappa)
-        aux_data = {
-            'nlmodel': self.nlmodel, 
-            'planner': self.planner,
-            'n_u': self.n_u,
-            'N': self.N,
-            'Jmax': self.Jmax,
-        }
-        return (children, aux_data)
-    
-    @classmethod
-    def _tree_unflatten(cls, aux_data, children):
-        nl = aux_data.get('nlmodel', None)
-        pl = aux_data.get('planner', None)
-        n_u = aux_data.get('n_u', 2)
-        N = aux_data.get('N', 10)
-        J_max = aux_data.get('Jmax', 4)
-        # children expected: (wmin, gamma, alpha, beta, kappa)
-        # wmin_c, gamma_c, alpha_c, beta_c, kappa_c = children
-        wmin, gamma, alpha, beta, kappa = children
-        # try:
-        #     wmin_c, gamma_c, alpha_c, beta_c, kappa_c = children
-        # except Exception:
-        #     # fallback: if children missing or malformed, use defaults
-        #     wmin_c, gamma_c, alpha_c, beta_c, kappa_c = (1e-6, 4.0, 1e-3, 2.0, 0.0)
-
-        # coerce to python floats to avoid assigning arrays into scalar slots
-        return cls(nl, pl, n_u, N, J_max, wmin=wmin, gamma=gamma,
-                   ukf_alpha=alpha, ukf_beta=beta, ukf_kappa=kappa)
 
 
 # ------------------ main driver ------------------
@@ -366,8 +287,7 @@ def do_gsf(params):
     obs = params.get("obs", [])
     nlmodel = params["nlmodel"]
     T = params.get("T", 10.0)
-    # sigma0 = params.get("sigma0", 1.0)
-    sigma0 = params['sigma0']
+    sigma0 = params.get("sigma0", 1.0)
     sigma0_arr = np.eye(Nt * params.get("n_u", getattr(nlmodel, "n_u", 2))) * float(sigma0) \
         if np.isscalar(sigma0) else np.array(sigma0, dtype=float)
 
@@ -378,7 +298,7 @@ def do_gsf(params):
     # mixture management params
     wmin = params.get("wmin", 1e-6)
     gamma = params.get("gamma", 4.0)
-    Jmax = params.get("Jmax", 4)
+    Jmax = params.get("Jmax", 2)
 
     # planner / collision checker: allow user to pass objects; otherwise attempt to construct
     planner = params.get("planner", None)
@@ -416,11 +336,10 @@ def do_gsf(params):
         Ps = [np.array(P, dtype=float) for P in params["mixture_init"]["Ps"]]
     else:
         # create initial control sequence (zeros) of length Nt*n_u (user can change)
-        # U_init = params.get("U_init", np.zeros((Nt * n_u,)))
-        U_init = np.kron(np.ones((1, Nt)), [0.0, 1.0]).ravel()
+        U_init = params.get("U_init", np.zeros((Nt * n_u,)))
         weights = [1.0]
-        mus = [jnp.array(U_init, dtype=float)]
-        Ps = [jnp.array(sigma0_arr, dtype=float)]
+        mus = [np.array(U_init, dtype=float)]
+        Ps = [np.array(sigma0_arr, dtype=float)]
 
     # containers
     states = [start.copy()]
@@ -432,7 +351,7 @@ def do_gsf(params):
     cov_traces = []
     innovations = []
     mu_states = []
-    num_gmm_components = []
+
     x_current = start.copy()
     t = 0.0
     steps = 0
@@ -444,23 +363,19 @@ def do_gsf(params):
     profiler = cProfile.Profile()
     profiler.enable()
 
-    # for step in tqdm(range(max_steps), desc="GSF Controller Steps"):
-    for step in range(max_steps):
+    for step in tqdm(range(max_steps), desc="GSF Controller Steps"):
         # --- PREDICT EXPANSION: for each existing component, branch for each process noise mode ---
-        # breakpoint()
         predicted_weights = []
         predicted_mus = []
         predicted_Ps = []
-        predicted_sigma_pts = []
         for j, (wj, muj, Pj) in enumerate(zip(weights, mus, Ps)):
             for mode in process_noises:
                 alpha_r = float(mode.get("weight", 1.0))
                 Q_r = np.array(mode["Q"], dtype=float)
-                mu_p, P_p, sigma_pts_p = gsf.predict_component(muj, Pj, Q_r)
+                mu_p, P_p = gsf.predict_component(muj, Pj, Q_r)
                 predicted_weights.append(wj * alpha_r)
                 predicted_mus.append(mu_p)
                 predicted_Ps.append(P_p)
-                predicted_sigma_pts.append(sigma_pts_p)
 
         # --- UPDATE EXPANSION: for each predicted component, branch for each measurement noise mode ---
         updated_weights = []
@@ -469,12 +384,12 @@ def do_gsf(params):
         y_preds_local = []
         Ss_local = []
         lambdas_local = []  # likelihoods
-        for j_pred, (w_pred, mu_pred, P_pred, sigma_pts_pred) in enumerate(zip(predicted_weights, predicted_mus, predicted_Ps, predicted_sigma_pts)):
+        for j_pred, (w_pred, mu_pred, P_pred) in enumerate(zip(predicted_weights, predicted_mus, predicted_Ps)):
             for m_mode in measurement_noises:
                 beta_s = float(m_mode.get("weight", 1.0))
                 R_s = m_mode["R"]
                 mu_u, P_u, Lambda_js, y_pred_j, S_j = gsf.update_component_unscented(
-                    mu_pred, P_pred, sigma_pts_pred, y_meas=0.0, R=R_s, x_current=x_current, q_ref=q_ref, cost_map=cost_map
+                    mu_pred, P_pred, y_meas=0.0, R=R_s, x_current=x_current, q_ref=q_ref, cost_map=cost_map
                 )
                 w_new = w_pred * beta_s * float(Lambda_js)
                 updated_weights.append(float(w_new))
@@ -495,26 +410,17 @@ def do_gsf(params):
                 w_arr = w_arr / (np.sum(w_arr) + 1e-12)
         else:
             w_arr = w_arr / (np.sum(w_arr) + 1e-12)
+        breakpoint()
         # mixture management: prune -> merge -> cap
         w_list = w_arr.tolist()
         mus_list = [m.tolist() for m in updated_mus]
         Ps_list = [p.tolist() for p in updated_Ps]
-
         w_list, mus_list, Ps_list = gsf.manage_mixture(w_list, mus_list, Ps_list)
-        n_sigmas = gsf.n_sigma
 
         num_components = int(len(w_list))
-        num_gmm_components.append(num_components)
         # set for next iteration
         weights = w_list
-        mus = []
-        for m in mus_list:
-            mu = jnp.clip(np.array(m).reshape(-1, n_u), 
-                          nlmodel.control_bounds[0],nlmodel.control_bounds[1]) 
-            mus.append(mu.ravel())
-                
-        # mus = [jnp.clip(np.array(m).reshape((-1, n_u)), nlmodel.control_bounds[0],nlmodel.control_bounds[1]) for m in mus_list]
-        
+        mus = [np.array(m) for m in mus_list]
         Ps = [np.array(p) for p in Ps_list]
 
         # diagnostics
@@ -529,29 +435,26 @@ def do_gsf(params):
         innovations_map.append([float(0.0 - y_preds_local[idx_map])])
         # apply control: take first u from theta_map
         u_opt = theta_map[: n_u]
-        x_current = nlmodel.dynamics_jax(x_current, u_opt, dt=dt, params=getattr(nlmodel, "nominal_params", None))
-        trajs = np.zeros((Jmax*n_sigmas, Nt+1, x_current.shape[0]))
-        for ji in range(len(mus)):
-            for si in range(n_sigmas):
-                mu = mus[ji]
-                P = Ps[ji]
-                sigma_pts = gsf.generate_sigma_points(mu, P)
-                theta_sigma = sigma_pts[si]
-                u_seq = np.array(theta_sigma).reshape((-1, 2))
-                state = x_current.copy()
-                trajs[ji*n_sigmas + si, 0, :] = state
-                for tt in range(Nt):
-                    # simulate one step using the system dynamics (jax version)
-                    state = nlmodel.dynamics_jax(state, u_seq[tt], dt=dt, params=nlmodel.nominal_params)
-                    trajs[ji*n_sigmas + si, tt+1, :] = state
-            # state = x_current.copy()
-            # trajs[si, 0, :] = state
-            # mu = mus[si]
-            # u_seq = np.array(mu).reshape((-1, 2))
-            # for tt in range(Nt):
-            #     # simulate one step using the system dynamics (jax version)
-            #     state = nlmodel.dynamics_jax(state, u_seq[tt], dt=dt, params=nlmodel.nominal_params)
-            #     trajs[si, tt+1, :] = state
+        try:
+            x_current = nlmodel.dynamics_jax(x_current, u_opt, dt=dt, params=getattr(nlmodel, "nominal_params", None))
+        except Exception:
+            # try a plain call to dynamics (user's model may differ)
+            try:
+                x_current = nlmodel.dynamics(x_current, u_opt, dt)
+            except Exception:
+                # fallback: simple Euler step if nlmodel has A,B (not ideal)
+                x_current = x_current
+        trajs = np.zeros((Jmax, Nt+1, x_current.shape[0]))
+        for si in range(len(mus)):
+            state = x_current.copy()
+            trajs[si, 0, :] = state
+            mu = mus[si]
+            u_seq = np.array(mu).reshape((-1, 2))
+            for tt in range(Nt):
+                # simulate one step using the system dynamics (jax version)
+                state = nlmodel.dynamics_jax(state, u_seq[tt], dt=dt, params=nlmodel.nominal_params)
+                trajs[si, tt+1, :] = state
+
         print(f"x_current: {x_current}, q_ref: {q_ref}, mu_new: {u_opt}, weights: {weights}")  # Debug print
         # stop if reached goal
         mu_states.append(trajs)
@@ -569,14 +472,14 @@ def do_gsf(params):
 
         # steps += 1
         t += dt
-        if step == 20:
+        if step == 5:
+            profiler.disable()
             profile_dir = os.path.join(os.getcwd(), "profiles")
             os.makedirs(profile_dir, exist_ok=True)
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             base = f"test_gsf_{ts}"
             prof_path = os.path.join(str(profile_dir), base + ".prof")
             profiler.dump_stats(prof_path)
-            profiler.disable()
             print("Profiling data collected.")
             print(f"Wrote profile .prof to: {os.path.abspath(prof_path)}")
         # optional goal check
@@ -587,4 +490,4 @@ def do_gsf(params):
         except Exception:
             pass
   
-    return states, costs, mu_states, cov_norms_map, cov_traces_map, innovations_map, num_gmm_components
+    return states, costs, mu_states, cov_norms_map, cov_traces_map, innovations_map, num_components

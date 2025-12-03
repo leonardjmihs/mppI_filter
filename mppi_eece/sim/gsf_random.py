@@ -67,7 +67,7 @@ def trivial_problem1():
     params['temperature'] = 1.0
     params['Q'] = np.diag([1.0, 1.0, 0.0])
     params['QT'] = np.diag([5.0, 5.0, 0.0])
-    params['R'] = np.diag([100.0, 0.1])
+    params['R'] = np.diag([0.1, 0.1])
     return params
 
 def easy_problem1():
@@ -448,11 +448,13 @@ def main(args):
         # MPC only
         gsf_params = copy.deepcopy(params)
         sigma0 = gsf_params['sigma0']
-        # gsf_params['process_noises'] = [{"weight": 0.5, "Q":  sigma0*100},
-        #                                {"weight": 0.5, "Q":  sigma0*1}]
-        # gsf_params['measurement_noises'] = [{"weight": 0.5, "R":  1.0},
-        #                                     {"weight": 0.5, "R":  0.1}
-        #                                     ]
+        # gsf_params['process_noises'] = [{"weight": 1.0, "Q":  sigma0*100}]
+        # gsf_params['measurement_noises'] = [{"weight": 1.0, "R":  10.0}]
+        gsf_params['process_noises'] = [{"weight": 0.5, "Q":  sigma0*100},
+                                       {"weight": 0.5, "Q":  sigma0*10000}]
+        gsf_params['measurement_noises'] = [{"weight": 0.5, "R":  0.01},
+                                            {"weight": 0.5, "R":  0.1}
+                                            ]
         outputs_gsf = do_gsf(copy.deepcopy(gsf_params))
 
         # outputs_ckf = do_ckf(copy.deepcopy(params))
@@ -474,17 +476,22 @@ def main(args):
             params_copy['R'] = params_copy['R'].tolist()
             json.dump(params_copy, file)
         gen_and_save_mppi_results(copy.deepcopy(params), outputs_gsf, foldername, counter, alg="ukf")
-        # Plot GSF MAP diagnostics (covariance norm, trace, innovation, mixture size) into the results folder
+        # Plot GSF diagnostics (per-component cov norms/traces/innovations) and trajectories
         try:
-            # outputs_gsf expected: (states, costs, trajs, cov_norms_map, cov_traces_map, innovations_map, num_gaussians)
+            # outputs_gsf expected variants: unpack robustly
             cov_norms_map = None
             cov_traces_map = None
             innovations_map = None
             num_gaussians = None
+            mu_states = None
 
+            # try canonical unpack
             try:
-                _, _, _, cov_norms_map, cov_traces_map, innovations_map, num_gaussians = outputs_gsf
+                _, _, mu_states, cov_norms_map, cov_traces_map, innovations_map, num_gaussians = outputs_gsf
             except Exception:
+                # fallback: extract by position if available
+                if len(outputs_gsf) >= 4:
+                    mu_states = outputs_gsf[2]
                 if len(outputs_gsf) >= 4:
                     cov_norms_map = outputs_gsf[3]
                 if len(outputs_gsf) >= 5:
@@ -494,43 +501,91 @@ def main(args):
                 if len(outputs_gsf) >= 7:
                     num_gaussians = outputs_gsf[6]
 
-            # choose time axis
+            # helper: convert list-of-lists to 2D numpy array padded with nan
+            def to_2d(data):
+                if data is None:
+                    return None
+                if len(data) == 0:
+                    return None
+                # detect nested
+                first = data[0]
+                if isinstance(first, (list, tuple, np.ndarray)):
+                    maxc = max(len(row) for row in data)
+                    arr = np.full((len(data), maxc), np.nan, dtype=float)
+                    for i, row in enumerate(data):
+                        for j, val in enumerate(row):
+                            try:
+                                arr[i, j] = float(val)
+                            except Exception:
+                                arr[i, j] = np.nan
+                    return arr
+                else:
+                    # 1D sequence
+                    try:
+                        return np.array(data, dtype=float)
+                    except Exception:
+                        return None
+
+            cov_traces_2d = to_2d(cov_traces_map)
+            innovations_2d = to_2d(innovations_map)
+            cov_norms_2d = to_2d(cov_norms_map)
+
             nsteps = 0
-            if cov_norms_map is not None:
-                nsteps = len(cov_norms_map)
-            elif cov_traces_map is not None:
-                nsteps = len(cov_traces_map)
-            elif innovations_map is not None:
-                nsteps = len(innovations_map)
+            if cov_traces_2d is not None:
+                nsteps = cov_traces_2d.shape[0]
+            elif cov_norms_2d is not None:
+                nsteps = cov_norms_2d.shape[0]
+            elif innovations_2d is not None:
+                nsteps = innovations_2d.shape[0]
             elif num_gaussians is not None:
                 nsteps = len(num_gaussians)
 
-            times = list(range(nsteps))
+            times = np.arange(nsteps)
 
-            fig, axs = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
-            if cov_norms_map is not None:
-                axs[0].plot(times, cov_norms_map, '-o', label='cov Frobenius norm')
-                axs[0].set_ylabel('||P||_F')
+            fig, axs = plt.subplots(4, 1, figsize=(12, 12), sharex=True)
+
+            # Plot covariance norms for all components (as faint lines) and MAP if available
+            if cov_norms_2d is not None:
+                nc = cov_norms_2d.shape[1]
+                for j in range(nc):
+                    axs[0].plot(times, cov_norms_2d[:, j], color='C0', alpha=0.3)
+                axs[0].set_ylabel('||P|| (per component)')
+            elif cov_norms_map is not None and isinstance(cov_norms_map, (list, np.ndarray)):
+                axs[0].plot(times, cov_norms_map, '-o', label='MAP ||P||')
+                axs[0].set_ylabel('||P|| (MAP)')
             else:
                 axs[0].text(0.5, 0.5, 'no cov_norms available', ha='center')
             axs[0].grid(True)
 
-            if cov_traces_map is not None:
-                axs[1].plot(times, cov_traces_map, '-o', label='cov trace')
-                axs[1].set_ylabel('trace(P)')
+            # Plot covariance traces
+            if cov_traces_2d is not None:
+                nc = cov_traces_2d.shape[1]
+                for j in range(nc):
+                    axs[1].plot(times, cov_traces_2d[:, j], color='C1', alpha=0.3)
+                axs[1].set_ylabel('trace(P) (per component)')
+            elif cov_traces_map is not None:
+                axs[1].plot(times, cov_traces_map, '-o', color='C1', label='MAP trace')
+                axs[1].set_ylabel('trace(P) (MAP)')
             else:
                 axs[1].text(0.5, 0.5, 'no cov_traces available', ha='center')
             axs[1].grid(True)
 
-            if innovations_map is not None:
-                axs[2].plot(times, np.abs(innovations_map), '-o', label='|innovation|')
-                axs[2].set_ylabel('|innovation|')
+            # Plot innovations (absolute)
+            if innovations_2d is not None:
+                nc = innovations_2d.shape[1]
+                for j in range(nc):
+                    axs[2].plot(times, np.abs(innovations_2d[:, j]), color='C2', alpha=0.3)
+                axs[2].set_ylabel('|innovation| (per component)')
+            elif innovations_map is not None:
+                axs[2].plot(times, np.abs(innovations_map), '-o', color='C2', label='|innovation| (MAP)')
+                axs[2].set_ylabel('|innovation| (MAP)')
             else:
                 axs[2].text(0.5, 0.5, 'no innovations available', ha='center')
             axs[2].grid(True)
 
+            # mixture size
             if num_gaussians is not None:
-                axs[3].step(times, num_gaussians, where='post', label='num gaussians')
+                axs[3].step(times, num_gaussians[:len(times)], where='post', label='num gaussians')
                 axs[3].set_ylabel('# gaussians')
                 axs[3].set_xlabel('timestep')
             else:
@@ -538,8 +593,29 @@ def main(args):
             axs[3].grid(True)
 
             fig.tight_layout()
-            fig.savefig(os.path.join(foldername, 'gsf_map_diagnostics.png'))
+            fig.savefig(os.path.join(foldername, 'gsf_components_diagnostics.png'))
             plt.close(fig)
+
+            # Plot all propagated trajectories: mu_states is list over timesteps of arrays (Jmax, Nt+1, state_dim)
+            if mu_states is not None:
+                fig2, ax2 = plt.subplots(1, 1, figsize=(8, 8))
+                for t_idx, trajs in enumerate(mu_states):
+                    try:
+                        trajs = np.array(trajs)
+                    except Exception:
+                        continue
+                    # trajs shape: (Jmax, Nt+1, state_dim)
+                    for si in range(trajs.shape[0]):
+                        seq = trajs[si]
+                        if seq.shape[1] >= 2:
+                            ax2.plot(seq[:, 0], seq[:, 1], color='C3', alpha=0.2)
+                ax2.set_title('All propagated gaussian trajectories (x vs y)')
+                ax2.set_xlabel('x'); ax2.set_ylabel('y')
+                ax2.grid(True)
+                fig2.tight_layout()
+                fig2.savefig(os.path.join(foldername, 'gsf_all_trajectories.png'))
+                plt.close(fig2)
+
         except Exception:
             # best-effort plotting; don't fail the run if plotting breaks
             pass

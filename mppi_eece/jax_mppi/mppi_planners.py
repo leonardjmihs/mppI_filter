@@ -67,7 +67,8 @@ class MPPI_Planner_Occup:
         new_state = self.system.dynamics_jax(sim_state, u, self.system.dt, self.system.nominal_params)
         dist = sim_state - q_ref
         # dx = jnp.dot(new_state - sim_state, jnp.dot(self.Q, new_state - sim_state))
-        new_cost = cost + jnp.dot(dist, jnp.dot(self.Q, dist))
+        # new_cost = cost + jnp.dot(dist, jnp.dot(self.Q, dist))
+        new_cost = cost + jnp.dot(dist, jnp.dot(self.Q, dist)) + jnp.dot(u, jnp.dot(self.R, u))
 
         # val = cost_map.get_value(new_state[:2])
         # occupied_now = jnp.logical_or(jnp.isinf(val), (val >= cost_map.occup_value))
