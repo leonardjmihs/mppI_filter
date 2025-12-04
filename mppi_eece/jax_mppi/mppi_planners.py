@@ -18,7 +18,7 @@ class MPPI_Planner_Occup:
         self.tolerance = tolerance
         self.occup_value = occup_value
         self.alpha = alpha
-
+    @jax.jit
     def eval_U_seq(self, u_seq: jnp.ndarray, 
             original_u: jnp.ndarray, 
             state: jnp.ndarray, 

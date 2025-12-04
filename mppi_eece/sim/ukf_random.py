@@ -20,7 +20,7 @@ import json
 import copy
 from mppi_eece.jax_mppi.mppi_planners import MPPI_Planner_Occup
 from mppi_eece.sim.do_mpc import gen_and_save_mpc_results, do_mpc
-from mppi_eece.sim.UKF_controller import do_ukf
+from mppi_eece.sim.UKF_controller import do_ukf, do_ukf_with_pcrb
 from mppi_eece.sim.ckf_controller import do_ckf
 from mppi_eece.sim.gsf_controller import do_gsf
 # from mppi_eece.sim.ukf_filterpy import do_ukf_filterpy
@@ -41,9 +41,11 @@ def uniquify(path):
 
 def trivial_problem1():
     params = {}
+    # params['dt'] = 0.5
+    # params['Nt'] = 3
     params['dt'] = 0.2
-    # params['Nt'] = 30
     params['Nt'] = 9
+    # params['Nt'] = 30
 
     params['n_samples'] = 100
 
@@ -159,157 +161,10 @@ def rand_problem1():
     return params
 
 def rmse(a, b):
-    return np.sqrt(np.mean((a - b) ** 2))
-
-
-
-def do_mppi(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic_weight=0.0, solver="ipopt"):
-    dt = params['dt']
-    Nt = params['Nt']
-    n_samples = params['n_samples']
-    start = params['start']
-    q_ref = params['q_ref']
-    obs = params['obs']
-    nlmodel = params['nlmodel']
-    T = params['T']
-    sigma0 = params['sigma0']
-    temperature = params['temperature']
-    Q = params['Q']
-    R = params['R']
-    QT = params['QT']
-
-    ns = 20
-    ratio_sim_mppi = 10
-    states = [start]
-    costs = []
-    min_cost = []
-    total_costs = 0
-
-    U = np.kron(np.ones((1, Nt)), [0.0, 1.0]).ravel()
-    global_U = U.copy()
-    global_Us = [global_U.copy()]
-    global_us = [global_U.copy().reshape((-1, 2))]
-    
-    resolution = 0.5
-    origin = np.array([-40, -10])
-    wh = np.array([50/resolution, 20/resolution], dtype=np.int32)
-    boundary = [[origin[0], origin[0]+wh[0]*resolution], [origin[1], origin[1]+wh[1]*resolution]]
-    grid = OccupGrid(boundary, resolution)
-    grid.find_occupancy_grid(obs, buffer=0.05)
-
-    occupied = grid.find_all_occupied(obs)
-    collision_checker = CollisionChecker(jnp.array(grid.occup_grid), origin, resolution, wh, occup_value=100)
-    num_anci = 4
-    planner_params={'reserve_num':num_anci,
-                    'max_raw_path':10,
-                    'max_raw_path2':10,
-                    'ratio_to_short':2.0,
-                    'sample_sz_p':0.0,
-                    'occup_value':100,
-                    'max_time':0.1}
-
-    ancillary_controller = AncillaryController(mpc_params=params, 
-                                               planner_params=planner_params, 
-                                               solver_type='acados',
-                                               planner_type='topo_prm')
-
-    # planner = TopoPRMPlanner(collision_checker=collision_checker, resolution=resolution, 
-    #                   max_raw_path=10, 
-    #                   max_raw_path2=10,
-    #                   reserve_num=num_anci, 
-    #                   ratio_to_short=2.0,
-    #                   sample_sz_p=0.0,
-    #                   occup_value=100,
-    #                   max_time=0.1)
-    # planner.occup_grid = grid.occup_grid
-    # planner.origin = origin
-    # planner.resolution = resolution
-    # planner.wh = wh
-    # dis = nlmodel.control_bounds[1][1] * nlmodel.dt * Nt
-    # ns = 10
-
-    # dxdt, state, control = nlmodel.cas_ode()
-    # ode = ca.Function('ode', [state, control], [dxdt]) 
-    # f = cas_shooting_solver(nlmodel, int(Nt/2), ns=ns, dt=nlmodel.dt*2, ode=ode, solver=solver)
-    # box = np.array([[1, 2]])
-    timestep_reached = -1
-
-    mppi_planner = MPPI_Planner_Occup(sigma=sigma0,
-                                      Q=Q,
-                                      QT=QT,
-                                      R=R,
-                                      temperature=temperature,
-                                      system=nlmodel, num_anci=num_anci, 
-                                      n_samples=n_samples, 
-                                      N=Nt,
-                                      tolerance=0.4,
-                                      occup_value=100)
-    state = start
-    U = np.kron(np.ones((1, Nt)), [0.0, 1.0]).ravel()
-    global_U = U.copy()
-    sim_state = state.copy()
-    cost = 0
-    timestep_prog = tqdm(np.arange(0, T, dt))
-    iter = 0
-
-    sampled_states = []
-    for t in timestep_prog:
-        rng_key, subkey = jax.random.split(rng_key)
-        U_anci = np.tile(np.array(global_U), [num_anci+1, 1])
-        if not base_alg:
-            if do_mpc:
-                all_planner_paths, all_mpc_paths, all_control_sequences = ancillary_controller.plan_multi(
-                                    start=sim_state, q_ref=q_ref, occupied=occupied, collision_checker=collision_checker)
-                for control_seq in all_control_sequences:
-                    u_sol = control_seq
-                    try:
-                        U_anci[i+1, :] = u_sol[:Nt, :].reshape((Nt*2))
-                    except:
-                        breakpoint()
-                # paths, _ = planner.findTopoPaths(sim_state, q_ref, reset=True) 
-                # if paths is not None:
-                #     num_paths = len(paths) 
-                #     for i, path in enumerate(paths):
-                #         x_sol, u_sol, _ = find_controls(path)
-                #         u_sol = np.repeat(u_sol, repeats=2, axis=0)
-                #         try:
-                #             U_anci[i+1, :] = u_sol[:Nt, :].reshape((Nt*2))
-                #         except:
-                #             breakpoint()
-        outputs = mppi_planner.mppi_mmodal(sim_state, global_U, U_anci, subkey, q_ref, collision_checker)
-        best_u = outputs[0]
-        new_u = outputs[1]
-        new_U = outputs[2]
-        min_cost = outputs[3]
-        collision_free = outputs[4]
-        all_costs = outputs[5]
-        all_state_seq = outputs[6]
-
-
-        cost, _ = ancillary_controller.eval_trajectory(outputs[1], sim_state, q_ref, dt=dt)
-
-        for i in range(ratio_sim_mppi):
-            sim_state = nlmodel.dynamics_jax(sim_state, best_u[0], dt=dt/ratio_sim_mppi, params=nlmodel.nominal_params)
-            dist = np.linalg.norm((sim_state - q_ref)[0:2])
-            if (dist<0.5) and timestep_reached==-1:
-                timestep_reached = t / dt
-
-        sampled_states.append(all_state_seq) 
-        states.append(sim_state)
-        global_us.append(best_u)
-        global_Us.append(global_U.copy())
-        costs.append(cost)
-        total_costs += cost
-        iter += 1
-
-    return (states,
-            costs, 
-            sampled_states,
-            timestep_reached, 
-            global_us,)
+    # return np.sqrt(np.mean((e - b) ** 2))
+    return np.sqrt((a-b) @ (a-b).T)
 
 def compare_mppi_to_mpc(mppi_outputs, params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic_weight=0.0, solver="ipopt"):
-
     Nt = params['Nt']
     start = params['start']
     q_ref = params['q_ref']
@@ -321,7 +176,7 @@ def compare_mppi_to_mpc(mppi_outputs, params, rng_key, do_mpc=True, ais_iters=0,
     QT = params['QT']
 
     states = mppi_outputs[0]
-    global_us = mppi_outputs[4]
+    global_us = mppi_outputs[-1]
     obs = params['obs']
     resolution = 0.5
     origin = np.array([-40, -10])
@@ -345,18 +200,6 @@ def compare_mppi_to_mpc(mppi_outputs, params, rng_key, do_mpc=True, ais_iters=0,
                                                     q_ref,
                                                     occupied,
                                                     collision_checker=collision_checker)
-        # best_cost, best_u_sol, best_states, all_planner_paths, all_mpc_paths,solver = find_mpc(states[i],
-        #                 q_ref,
-        #                 Nt,
-        #                 T,
-        #                 occupied,
-        #                 Q=Q,
-        #                 QT=QT,
-        #                 R=R,
-        #                 collision_checker=collision_checker,
-        #                 eval_trajectory=eval_trajectory,
-        #                 num_sides=9,
-        #                 solver=solver)
             
         optimal_us.append(best_u_sol)
         optimal_costs.append(best_cost)
@@ -372,29 +215,57 @@ def compare_mppi_to_mpc(mppi_outputs, params, rng_key, do_mpc=True, ais_iters=0,
     for i, u_mpc in enumerate(optimal_us):
         # skip if MPC failed to produce a control sequence
         if u_mpc is None:
+            rmse_per_timestep.append(np.nan)
             continue
 
 
         # corresponding MPPI control sequence at this timestep
         try:
-            u_mppi = np.asarray(global_us[i])
+            u_mppi = np.asarray(global_us[i]).reshape(u_mpc.shape)
         except Exception:
             # if indexing fails, skip
+            rmse_per_timestep.append(np.nan)
             continue
 
         # align lengths (compare up to the shorter horizon)
         L = min(len(u_mpc), len(u_mppi))
         if L <= 0:
+            rmse_per_timestep.append(np.nan)
             continue
         err = rmse(u_mpc[:L], u_mppi[:L])
         rmse_per_timestep.append(err)
+    return optimal_us, optimal_states, optimal_costs, rmse_per_timestep
 
-    # summary stats
-    avg_rmse = float(np.mean(rmse_per_timestep)) if len(rmse_per_timestep) > 0 else float('nan')
-    print(f"MPPI vs MPC control RMSE over {len(rmse_per_timestep)} timesteps: avg={avg_rmse:.4f}")
+def plot_rmse_pcrg(rmse_per_timestep, pcrb_history, J_history, foldername, counter, alg="ukf"):
+    # pcrb_history = array of float(jnp.trace(J_inv))
+    plt.figure()
+    # The elements in the diagonal of PCRB(xk) = J−1
+    # k bound the achievable MSE for a filtering
+    # solution ˆxk|k. Create a plot in your simulator showing the evolution of √PCRB(xk) over
+    # time, bounding the RMSE of the filtering solution in Part 2. Show a plot for each state in
+    # xk, 
+    pcrb_std = np.sqrt(np.array([np.linalg.inv(J).diagonal() for J in J_history]))
+    for dim in range(2):
+        plt.subplot(3,1,dim+1)
+        plt.plot(pcrb_std[:, dim], label=f'PCRB std dim {dim}')
+        plt.legend()
+    
+    plt.subplot(3,1,3)
+    # plot efficiency ratio pcrb_history/trace(rmse)
+    trace_rmse = []
+    for rmse in rmse_per_timestep:
+        if np.isscalar(rmse):
+            trace_rmse.append(np.nan)
+        else:
+            trace_rmse.append(np.trace(rmse))
+    # find idx wtih nans in trace and remove from both arrays
+    valid_idx = ~np.isnan(trace_rmse)
+    plt.plot( np.array(pcrb_history)[valid_idx] / np.array(trace_rmse)[valid_idx], label='PCRB efficiency')
 
-    return mppi_outputs, (optimal_us, optimal_states, optimal_costs, rmse_per_timestep)
-
+    plt.legend()
+    pic_name = os.path.join(foldername, f'rmse_pcrb_{alg}_{counter}.png')
+    plt.savefig(pic_name)
+    plt.close()
 
 def gen_and_save_mppi_results(params, outputs, foldername, counter, alg="mpc_ais"):
     obs = params['obs']
@@ -441,13 +312,14 @@ def main(args):
         
         print(params)
         # MPC only
-        outputs_ukf = do_ukf(copy.deepcopy(params))
+        # outputs_ukf = do_ukf(copy.deepcopy(params))
+        outputs_ukf = do_ukf_with_pcrb(copy.deepcopy(params))
         # outputs_gsf = do_gsf(copy.deepcopy(params))
 
         # outputs_ckf = do_ckf(copy.deepcopy(params))
 
         # MPPI only
-        outputs_mppi = do_mppi(copy.deepcopy(params), rng_keys[trial], do_mpc=False)
+        # outputs_mppi = do_mppi(copy.deepcopy(params), rng_keys[trial], do_mpc=False)
 
         foldername, counter = uniquify('sim_results')
         os.mkdir(foldername) 
@@ -466,18 +338,28 @@ def main(args):
         # Plot UKF diagnostics (covariance trace, innovations, resets) into the results folder
         try:
             # outputs_ukf expected: (states, costs, sigma_sequences, cov_norms, cov_traces, innovations, reset_flags, cov_trace_threshold, innovation_threshold)
-            cov_traces = None
-            cov_norms = None
-            innovations = None
-            reset_flags = None
-            cov_thresh = None
-            innov_thresh = None
+            # cov_traces = None
+            # cov_norms = None
+            # innovations = None
+            # reset_flags = None
+            # cov_thresh = None
+            # innov_thresh = None
 
-            if isinstance(outputs_ukf, (tuple, list)) and len(outputs_ukf) >= 9:
-                _, _, _, cov_norms, cov_traces, innovations, reset_flags, cov_thresh, innov_thresh = outputs_ukf
-            elif isinstance(outputs_ukf, (tuple, list)) and len(outputs_ukf) >= 5:
-                # older fallback: (states, costs, sigma_sequences, cov_norms, reset_flags)
-                _, _, _, cov_norms, reset_flags = outputs_ukf
+            # if isinstance(outputs_ukf, (tuple, list)) and len(outputs_ukf) >= 9:
+            #     _, _, _, cov_norms, cov_traces, innovations, reset_flags, cov_thresh, innov_thresh = outputs_ukf
+            # elif isinstance(outputs_ukf, (tuple, list)) and len(outputs_ukf) >= 5:
+            #     # older fallback: (states, costs, sigma_sequences, cov_norms, reset_flags)
+            #     _, _, _, cov_norms, reset_flags = outputs_ukf
+            states = outputs_ukf[0]
+            costs = outputs_ukf[1]
+            sigma_sequences = outputs_ukf[2]
+            cov_norms = outputs_ukf[3]
+            cov_traces = outputs_ukf[4]
+            innovations = outputs_ukf[5]
+            reset_flags = outputs_ukf[6]
+            cov_thresh = outputs_ukf[7]
+            innov_thresh = outputs_ukf[8]
+
 
             # prefer plotting cov_trace if available
             if cov_traces is not None:
@@ -539,10 +421,11 @@ def main(args):
         except Exception:
             # best-effort plotting; don't fail the run if plotting breaks
             pass
-        gen_and_save_mppi_results(copy.deepcopy(params), outputs_mppi, foldername, counter, alg="mppi")
+        # gen_and_save_mppi_results(copy.deepcopy(params), outputs_mppi, foldername, counter, alg="mppi")
         # gen_and_save_mpc_results(copy.deepcopy(params), outputs_mpc, foldername, counter, alg="mpc")
 
-        outputs_mppi, outputs_ukf = compare_mppi_to_mpc(outputs_mppi, copy.deepcopy(params), rng_keys[trial], do_mpc=True, base_alg=True, solver=solver) 
+        outputs_ground_truth = compare_mppi_to_mpc(outputs_ukf, copy.deepcopy(params), rng_keys[trial], do_mpc=True, base_alg=True, solver=solver) 
+        plot_rmse_pcrg(outputs_ground_truth[3], outputs_ukf[9], outputs_ukf[10], foldername, counter, alg="ukf")
         plt.close('all')
 
 if __name__ == "__main__":

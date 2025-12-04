@@ -129,229 +129,112 @@ class MPPI_GSF_Planner(MPPI_Planner_Occup):
         u_samples = jax.vmap(sample_single)(keys, mode_means, mode_covs)
         return u_samples, mode_indices
 
-    # def gsf_update(self, modes, samples, costs, mode_indices, state, q_ref, cost_map):
-    #     """GSF update using sample-based gradient estimation with EKF framework"""
-    
-    #     updated_modes = []
-    
-    #     for mode_id, mode in enumerate(modes):
-    #         mask = (mode_indices == mode_id)
-    #         mode_samples = samples[mask]
-    #         mode_costs = costs[mask]
-        
-    #         # === 1. Weight Update (Bayes rule) ===
-    #         finite_mask = jnp.isfinite(mode_costs)
-    #         n_finite = jnp.sum(finite_mask)
-        
-    #         if n_finite == 0:
-    #             # No valid samples - heavily penalize
-    #             new_weight = mode.weight * 1e-6
-    #             updated_mode = ControlMode(mode.u_mean, mode.u_cov, new_weight)
-    #             updated_modes.append(updated_mode)
-    #             continue
-        
-    #         # Likelihood: p(z=0 | u) ∝ exp(-cost(u) / λ)
-    #         likelihoods = jnp.exp(-mode_costs / self.temperature)
-    #         avg_likelihood = jnp.nanmean(jnp.where(finite_mask, likelihoods, 0.0))
-    #         new_weight = mode.weight * avg_likelihood
-        
-    #         # === 2. EKF Update with Sample-Based Jacobian ===
-        
-    #         # 2a. Evaluate measurement function at current mean
-    #         z_pred = self._evaluate_cost_at_control(mode.u_mean, state, q_ref, cost_map)
-        
-    #         # 2b. Estimate Jacobian H = ∇_u cost(u) using samples
-    #         H = self._estimate_cost_jacobian_from_samples(
-    #             mode.u_mean, 
-    #             mode_samples[finite_mask], 
-    #             mode_costs[finite_mask]
-    #         )  # Shape: (1, N*2)
-        
-    #         # 2c. Innovation
-    #         # z_obs = self.z_desired  # 0
-    #         z_obs = jnp.min(costs)  # 0
-    #         innovation = z_obs - z_pred
-        
-    #         # 2d. Innovation covariance: S = H P H^T + R
-    #         S = H @ mode.u_cov @ H.T + self.temperature
-    #         S = jnp.maximum(S, 1e-6)  # Ensure positive
-        
-    #         # 2e. Kalman gain: K = P H^T S^{-1}
-    #         K = (mode.u_cov @ H.T) / S  # Shape: (N*2, 1)
-        
-    #         # 2f. State update: u_new = u_mean + K * innovation
-    #         u_update_flat = mode.u_mean.flatten() + K.flatten() * innovation
-    #         new_u_mean = u_update_flat.reshape((self.N, 2))
-        
-    #         # Clip to control bounds
-    #         new_u_mean = jnp.clip(
-    #             new_u_mean,
-    #             self.system.control_bounds[0],
-    #             self.system.control_bounds[1]
-    #         )
-        
-    #         # 2g. Covariance update: P_new = (I - K H) P
-    #         I = jnp.eye(self.N * 2)
-    #         new_u_cov = (I - K @ H) @ mode.u_cov
-        
-    #         # Optional: Joseph form for numerical stability
-    #         # new_u_cov = (I - K @ H) @ mode.u_cov @ (I - K @ H).T + K @ R @ K.T
-    #         # where R = self.temperature
-        
-    #         # Ensure positive definite
-    #         new_u_cov = 0.5 * (new_u_cov + new_u_cov.T)  # Symmetrize
-    #         new_u_cov = new_u_cov + 1e-6 * jnp.eye(self.N * 2)  # Regularize
-        
-    #         updated_mode = ControlMode(
-    #             u_mean=new_u_mean,
-    #             u_cov=new_u_cov,
-    #             weight=new_weight
-    #         )
-    #         updated_modes.append(updated_mode)
-    
-    #     # Normalize weights
-    #     total_weight = sum(m.weight for m in updated_modes)
-    #     if total_weight > 1e-10:
-    #         updated_modes = [
-    #             ControlMode(m.u_mean, m.u_cov, m.weight / total_weight)
-    #             for m in updated_modes
-    #         ]
-    
-    #     return updated_modes
-
-    def _evaluate_cost_at_control(self, u_seq, state, q_ref, cost_map):
-        """Evaluate cost function at a specific control sequence"""
-        # Use your existing eval_U_seq
-        cost, _, _, _ = self.eval_U_seq(
-            u_seq,
-            jnp.zeros_like(u_seq.flatten()),  # original_u not used in cost computation
-            state,
-            q_ref,
-            cost_map
-        )
-        return cost
-
-    def _estimate_cost_jacobian_from_samples(self, u_mean, samples, costs):
+    def gsf_update_ukf(self, modes, state, q_ref, cost_map):
         """
-        Estimate Jacobian ∇_u cost(u_mean) using linear regression on samples
-    
-        Model: cost(u) ≈ cost(u_mean) + ∇cost^T (u - u_mean)
-    
-        Args:
-            u_mean: (N, 2) current mode mean
-            samples: (n_samples, N, 2) control samples
-            costs: (n_samples,) corresponding costs
-    
-        Returns:
-            H: (1, N*2) Jacobian vector
+        UKF-style update: use sigma points instead of random samples
         """
-        n_samples = samples.shape[0]
-    
-        if n_samples < 3:
-            # Not enough samples for regression, return zero gradient
-            return jnp.zeros((1, self.N * 2))
-    
-        # Compute deviations from mean
-        deviations = samples - u_mean  # (n_samples, N, 2)
-        X = deviations.reshape(n_samples, -1)  # (n_samples, N*2)
-    
-        # Estimate cost at mean (could also evaluate directly)
-        cost_at_mean = jnp.mean(costs)  # Simple estimate
-    
-        # Center costs
-        y = costs - cost_at_mean  # (n_samples,)
-    
-        # Weighted least squares (give more weight to low-cost samples)
-        weights = jnp.exp(-costs / self.temperature)
-        weights = weights / (jnp.sum(weights) + 1e-10)
-    
-        # Solve: ∇cost = argmin_g Σ w_i (y_i - g^T x_i)^2
-        # Solution: g = (X^T W X)^{-1} X^T W y
-    
-        W = jnp.diag(weights)
-        XtWX = X.T @ W @ X
-        XtWy = X.T @ W @ y
-    
-        # Add regularization for stability
-        XtWX_reg = XtWX + 1e-4 * jnp.eye(self.N * 2)
-    
-        # Solve for gradient
-        gradient = jnp.linalg.solve(XtWX_reg, XtWy)
-    
-        return gradient.reshape(1, -1)  # (1, N*2)
-
-    def _estimate_cost_hessian_from_samples(self, u_mean, samples, costs):
-        """
-        Estimate Hessian ∇²_u cost(u_mean) using quadratic regression on samples
-    
-        Model: cost(u) ≈ c_0 + g^T δu + 0.5 δu^T H δu
-    
-        Args:
-            u_mean: (N, 2) current mode mean
-            samples: (n_samples, N, 2) control samples
-            costs: (n_samples,) corresponding costs
-    
-        Returns:
-            H: (N*2, N*2) Hessian matrix
-        """
-        n_samples = samples.shape[0]
+        updated_modes = []
         n_dim = self.N * 2
     
-        if n_samples < n_dim + 1:
-            # Not enough samples, return identity (assume isotropic curvature)
-            return jnp.eye(n_dim) / self.temperature
+        for mode in modes:
+            # === Generate Sigma Points ===
+            # Use unscented transform
+            alpha, beta, kappa = 1e-3, 2.0, 0.0
+            lambda_ukf = alpha**2 * (n_dim + kappa) - n_dim
+        
+            # Cholesky decomposition
+            try:
+                L = jnp.linalg.cholesky(mode.u_cov)
+            except:
+                # Fall back if not PSD
+                updated_modes.append(mode)
+                continue
+        
+            # Sigma points (2n+1 points)
+            sigma_points = jnp.zeros((2*n_dim + 1, self.N, 2))
+            sigma_points = sigma_points.at[0].set(mode.u_mean)
+        
+            sqrt_term = jnp.sqrt(n_dim + lambda_ukf) * L
+            for i in range(n_dim):
+                sigma_points = sigma_points.at[i+1].set(
+                    (mode.u_mean.flatten() + sqrt_term[:, i]).reshape(self.N, 2)
+                )
+                sigma_points = sigma_points.at[i+1+n_dim].set(
+                    (mode.u_mean.flatten() - sqrt_term[:, i]).reshape(self.N, 2)
+                )
+        
+            # Clip sigma points
+            sigma_points = jnp.clip(sigma_points, 
+                                self.system.control_bounds[0],
+                                self.system.control_bounds[1])
+        
+            # === Evaluate Costs at Sigma Points ===
+            costs = jax.vmap(
+                lambda u: self.eval_U_seq(u, jnp.zeros_like(u.flatten()), 
+                                        state, q_ref, cost_map)[0]
+            )(sigma_points)
+        
+            # === Weights for Sigma Points ===
+            w_m_0 = lambda_ukf / (n_dim + lambda_ukf)
+            w_c_0 = w_m_0 + (1 - alpha**2 + beta)
+            w_i = 1.0 / (2 * (n_dim + lambda_ukf))
+        
+            weights_mean = jnp.concatenate([
+                jnp.array([w_m_0]),
+                jnp.ones(2*n_dim) * w_i
+            ])
+        
+            weights_cov = jnp.concatenate([
+                jnp.array([w_c_0]),
+                jnp.ones(2*n_dim) * w_i
+            ])
+        
+            # === Predicted Measurement ===
+            h_mean = jnp.sum(weights_mean * costs)
+        
+            # === Cross-covariance ===
+            u_deviations = sigma_points - mode.u_mean
+            h_deviations = costs - h_mean
+        
+            P_uh = jnp.sum(
+                weights_cov[:, None, None, None] * 
+                u_deviations[:, :, :, None] * h_deviations[:, None, None, None],
+                axis=0
+            ).reshape(n_dim)
+        
+            P_hh = jnp.sum(weights_cov * h_deviations**2) + self.temperature
+        
+            # === Kalman Update ===
+            K = P_uh / P_hh
+            innovation = self.z_desired - h_mean
+        
+            u_new_flat = mode.u_mean.flatten() + K * innovation
+            u_new = u_new_flat.reshape((self.N, 2))
+        
+            P_new = mode.u_cov - jnp.outer(K, K) * P_hh
+            P_new = 0.5 * (P_new + P_new.T) + 1e-6 * jnp.eye(n_dim)
+        
+            # === Weight Update ===
+            likelihood = jnp.exp(-0.5 * innovation**2 / P_hh) / jnp.sqrt(2 * jnp.pi * P_hh)
+            new_weight = mode.weight * likelihood
+        
+            updated_modes.append(ControlMode(
+                jnp.clip(u_new, self.system.control_bounds[0], self.system.control_bounds[1]),
+                P_new,
+                new_weight
+            ))
     
-        # Compute deviations
-        deviations = samples - u_mean
-        X = deviations.reshape(n_samples, -1)  # (n_samples, N*2)
+        # Normalize
+        total_weight = sum(m.weight for m in updated_modes)
+        if total_weight > 1e-10:
+            updated_modes = [
+                ControlMode(m.u_mean, m.u_cov, m.weight / total_weight)
+                for m in updated_modes
+            ]
     
-        # Build quadratic feature matrix
-        # Features: [x_1, x_2, ..., x_n, x_1^2, x_1*x_2, ..., x_n^2]
-        n_quad_features = n_dim + n_dim * (n_dim + 1) // 2
-    
-        X_quad = jnp.zeros((n_samples, n_quad_features))
-        X_quad = X_quad.at[:, :n_dim].set(X)  # Linear terms
-    
-        # Quadratic terms (upper triangular)
-        idx = n_dim
-        for i in range(n_dim):
-            for j in range(i, n_dim):
-                X_quad = X_quad.at[:, idx].set(X[:, i] * X[:, j])
-                idx += 1
-    
-        # Solve weighted least squares
-        cost_at_mean = jnp.mean(costs)
-        y = costs - cost_at_mean
-    
-        weights = jnp.exp(-costs / self.temperature)
-        weights = weights / (jnp.sum(weights) + 1e-10)
-    
-        W = jnp.diag(weights)
-        XtWX = X_quad.T @ W @ X_quad
-        XtWy = X_quad.T @ W @ y
-    
-        # Regularization
-        XtWX_reg = XtWX + 1e-3 * jnp.eye(n_quad_features)
-    
-        # Solve
-        coeffs = jnp.linalg.solve(XtWX_reg, XtWy)
-    
-        # Extract Hessian from quadratic coefficients
-        # The Hessian is symmetric, so H[i,j] comes from coefficient of x_i*x_j
-        H = jnp.zeros((n_dim, n_dim))
-        idx = n_dim
-        for i in range(n_dim):
-            for j in range(i, n_dim):
-                if i == j:
-                    H = H.at[i, j].set(2 * coeffs[idx])  # d²/dx² term
-                else:
-                    H = H.at[i, j].set(coeffs[idx])  # d²/dxdy term
-                    H = H.at[j, i].set(coeffs[idx])  # Symmetric
-                idx += 1
-    
-        return H 
+        return updated_modes
 
-    def gsf_update(self, modes, samples, costs, mode_indices, U_original):
+    def gsf_update(self, modes, samples, costs, mode_indices):
         """GSF update step: update modes based on cost 'measurements'"""
         
         updated_modes = []
@@ -648,7 +531,8 @@ class MPPI_GSF_Planner(MPPI_Planner_Occup):
         
         # === 4. GSF UPDATE ===
         # modes_u = self.gsf_update(modes_p, u_samples, costs, mode_indices, state, q_ref, cost_map)
-        modes_u = self.gsf_update(modes_p, u_samples, costs, mode_indices, U_original)
+        modes_u = self.gsf_update(modes_p, u_samples, costs, mode_indices)
+        # modes_u = self.gsf_update_enkf(modes_p, u_samples, costs, mode_indices)
         
         # === 5. MODE MANAGEMENT ===
         modes_n = self.manage_modes(modes_u, u_samples, costs, mode_indices)

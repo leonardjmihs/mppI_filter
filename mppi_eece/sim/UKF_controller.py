@@ -6,7 +6,7 @@ from tqdm import tqdm
 from mppi_eece.sim.grid import OccupGrid
 from mppi_eece.jax_mppi.mppi_planners import MPPI_Planner_Occup
 from mppi_eece.jax_mppi.collision_checker import CollisionChecker
-
+import time
 
 class UKF_Controller:
     def __init__(self, system, mppi_planner, alpha=1e-2, beta=2, kappa=0,
@@ -438,3 +438,223 @@ def do_ukf(params):
 
     # Return simulation results and diagnostics (plotting moved to caller)
     return states, costs, sigma_sequences, cov_norms, cov_traces, innovations, reset_flags, ukf.cov_trace_threshold, ukf.innovation_threshold
+
+
+
+def do_ukf_with_pcrb(params):
+    dt = params['dt']
+    Nt = params['Nt']
+    start = params['start']
+    q_ref = params['q_ref']
+    obs = params['obs']
+    nlmodel = params['nlmodel']
+    T = params['T']
+    sigma0 = params['sigma0']
+    Q = params['Q']
+    QT = params['QT']
+    
+    # Setup collision checker
+    resolution = 0.5
+    origin = np.array([-40, -10])
+    wh = np.array([50/resolution, 20/resolution], dtype=np.int32)
+    boundary = [[origin[0], origin[0]+wh[0]*resolution], 
+                [origin[1], origin[1]+wh[1]*resolution]]
+    
+    
+    grid = OccupGrid(boundary, resolution)
+    grid.find_occupancy_grid(obs, buffer=0.05)
+    
+    collision_checker = CollisionChecker(
+        jnp.array(grid.occup_grid), origin, resolution, wh, occup_value=100
+    )
+    
+    # Create MPPI planner (for cost evaluation only)
+    mppi_planner = MPPI_Planner_Occup(
+        sigma=sigma0, Q=Q, QT=QT, R=params['R'],
+        temperature=params['temperature'],
+        system=nlmodel, num_anci=0, 
+        n_samples=0,  # not sampling
+        N=Nt, tolerance=0.4, occup_value=100
+    )
+    
+    
+    # Create UKF controller
+    ukf = UKF_Controller(nlmodel, mppi_planner)
+    
+    # Initialize
+    U_init = np.kron(np.ones((1, Nt)), [0.0, 1.0]).ravel()
+    mu = jnp.array(U_init)
+    P = sigma0 # Control uncertainty only
+    
+    # Process and measurement noise
+    Q_process = sigma0*100  # Control drift
+    R_meas = 10.0 # Measurement noise variance
+    
+    # ============ PCRB INITIALIZATION ============
+    nu = 2  # Control dimension
+    dim = Nt * nu
+    sigma_r = np.sqrt(R_meas)
+    n_pcrb_samples = 200
+    epsilon = 1e-4
+    
+    # Build shift operator F
+    F = np.zeros((dim, dim))
+    for i in range(Nt - 1):
+        start_i = i * nu
+        end_i = (i + 1) * nu
+        start_j = (i + 1) * nu
+        end_j = (i + 2) * nu
+        F[start_i:end_i, start_j:end_j] = np.eye(nu)
+    F = jnp.array(F)
+    
+    # Precompute D11 and D12
+    Q_inv = jnp.linalg.inv(jnp.array(sigma0))
+    D11 = F.T @ Q_inv @ F
+    D12 = -F.T @ Q_inv
+    
+    # Initialize Fisher Information Matrix
+    J_k = jnp.eye(dim) * 1e-6
+    
+    pcrb_history = []
+    J_history = []
+    gradient_norms = []
+    # ============================================
+    
+    # Simulate
+    states = [start]
+    costs = []
+    sigma_sequences = []
+    x_current = start.copy()
+    
+    cov_norms = []
+    cov_traces = []
+    innovations = []
+    reset_flags = []
+    mus = [] 
+
+    for t in tqdm(np.arange(0, T, dt)):
+        # UKF step - note x_current is observed, not estimated!
+        mu, P, innovation, sigma_points, was_reset = ukf.step(
+            mu, P, Q_process, R_meas, x_current, q_ref, collision_checker, y_meas=0.0
+        )
+        
+        # ============ PCRB UPDATE ============
+        # try:
+        # Sample control sequences from p(θ|y)
+        mu_np = np.array(mu).flatten()
+        P_np = np.array(P)
+            
+        # Ensure positive definite
+        eigvals = np.linalg.eigvalsh(P_np)
+        if np.min(eigvals) < 1e-8:
+            P_np = P_np + np.eye(len(P_np)) * 1e-6
+            
+        samples = np.random.multivariate_normal(mu_np, P_np, size=n_pcrb_samples)
+            
+        # Compute gradient outer products via finite differences
+        gradient_outer_products = []
+        grad_norms = []
+        st_time = time.time()
+        def compute_gradient_for_sample(sample):
+                # Compute baseline cost
+                U_baseline = sample.reshape((Nt, nu))
+                outputs = mppi_planner.eval_U_seq(
+                    U_baseline, sample, x_current, q_ref, collision_checker
+                )
+                cost_baseline = outputs[0]
+                jnp.clip(cost_baseline, 0,1e10)
+                
+                # Compute gradient via finite differences (vmapped over dimensions)
+                def compute_partial_derivative(i):
+                    sample_perturbed = sample.at[i].add(epsilon)
+                    U_perturbed = sample_perturbed.reshape((Nt, nu))
+                    
+                    outputs = mppi_planner.eval_U_seq(
+                        U_perturbed, sample_perturbed, x_current, q_ref, collision_checker
+                    )
+                    cost_perturbed = outputs[0]
+                    
+                    return (cost_perturbed - cost_baseline) / epsilon
+                
+                # Vmap over all control dimensions
+                gradient = jax.vmap(compute_partial_derivative)(jnp.arange(len(sample)))
+                return gradient, jnp.outer(gradient, gradient), jnp.linalg.norm(gradient)
+        gradients, outer_products, norms = jax.vmap(compute_gradient_for_sample)(samples)
+        gradient_outer_products = [np.array(op) for op in outer_products]
+
+        grad_norms = [float(n) for n in norms]
+        end_time = time.time()
+        # Compute D22 = (1/σ²) E[g g^T]
+        E_gg_T = np.mean(gradient_outer_products, axis=0)
+        D22 = jnp.array(E_gg_T) / (sigma_r ** 2)
+            
+        # Update FIM: J_{k+1} = D22 - D12 (J_k + D11)^{-1} D12^T
+        sum_term = J_k + D11
+        solve_term = jnp.linalg.pinv(sum_term) @ D12.T
+            
+        correction = D12 @ solve_term
+        J_k = D22 - correction
+            
+        # Compute PCRB bound = trace(J^{-1})
+        J_inv = jnp.linalg.pinv(J_k)
+            
+        pcrb_bound = float(jnp.trace(J_inv))
+            
+        # Store
+        pcrb_history.append(pcrb_bound)
+        J_history.append(np.array(J_k))
+        gradient_norms.append(np.mean(grad_norms))
+            
+        try:
+            P_np = np.array(P)
+            cov_norm = float(np.linalg.norm(P_np, ord='fro'))
+            cov_trace = float(np.trace(P_np))
+        except Exception:
+            cov_norm = float('nan')
+            cov_trace = float('nan')
+        cov_norms.append(cov_norm)
+        cov_traces.append(cov_trace)
+        innovations.append(float(innovation))
+        reset_flags.append(bool(was_reset))
+        
+        # Extract first control
+        u_opt = mu[:ukf.n_u]
+        mus.append(mu)
+        
+        # Simulate system
+        x_current = nlmodel.dynamics_jax(x_current, u_opt,
+                                     dt=dt, params=nlmodel.nominal_params)
+        states.append(x_current)
+        # convert sigma points to state trajectories and store them
+        # sigma_points: (n_sigma, n_theta) where n_theta = Nt * n_u
+        sigma_np = np.array(sigma_points)
+        n_sigma = sigma_np.shape[0]
+        state_dim = x_current.shape[0]
+        # trajectories shape: (n_sigma, Nt+1, state_dim)
+        trajs = np.zeros((n_sigma, Nt+1, state_dim))
+        for si in range(n_sigma):
+            state = x_current.copy()
+            trajs[si, 0, :] = state
+            u_seq = sigma_np[si].reshape((-1, 2))
+            for tt in range(Nt):
+                # simulate one step using the system dynamics (jax version)
+                state = nlmodel.dynamics_jax(state, u_seq[tt], dt=dt, params=nlmodel.nominal_params)
+                trajs[si, tt+1, :] = state
+        sigma_sequences.append(trajs)
+        
+        # Evaluate cost
+        outputs = mppi_planner.eval_U_seq(
+            mu.reshape((-1, 2)), mu, x_current, q_ref, collision_checker
+        )
+        cost = outputs[0]
+        costs.append(float(cost))
+        
+        # Check if reached goal
+        if np.linalg.norm(x_current[:2] - q_ref[:2]) < 0.5:
+            print(f"Reached goal at t={t:.2f}")
+            break
+    
+    # Return simulation results with PCRB data
+    return (states, costs, sigma_sequences, cov_norms, cov_traces, innovations, 
+            reset_flags, ukf.cov_trace_threshold, ukf.innovation_threshold,
+            pcrb_history, J_history, gradient_norms, mus)
