@@ -286,8 +286,8 @@ class PathProcessor:
         Raises:
             ValueError: If path or pt_num are invalid
         """
-        if not isinstance(path, list) or len(path) == 0:
-            raise ValueError(f"path must be non-empty list, got {type(path).__name__} with length {len(path) if isinstance(path, list) else 'N/A'}")
+        # if not isinstance(path, list) or len(path) == 0:
+        #     raise ValueError(f"path must be non-empty list, got {type(path).__name__} with length {len(path) if isinstance(path, list) else 'N/A'}")
         
         if pt_num <= 0:
             raise ValueError(f"pt_num must be positive, got {pt_num}")

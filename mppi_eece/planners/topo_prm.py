@@ -334,7 +334,9 @@ class TopoPRM:
             >>> print(f"Total time: {stats['total_time']:.4f}s")
         """
         return self.timing_stats.copy()
-    
+    def discretize_path(self, path, num_points):
+        return self.path_processor.discretize_path(path, num_points) 
+
     def get_timing_report(self, detailed: bool = True) -> str:
         """
         Get a formatted timing report from the last planning call.

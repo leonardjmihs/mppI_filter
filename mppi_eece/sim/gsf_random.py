@@ -23,6 +23,7 @@ from mppi_eece.sim.do_mpc import gen_and_save_mpc_results, do_mpc
 from mppi_eece.sim.UKF_controller import do_ukf
 from mppi_eece.sim.ckf_controller import do_ckf
 from mppi_eece.sim.gsf_controller import do_gsf
+from mppi_eece.sim.gsf_mppi import do_gsf_mppi
 # from mppi_eece.sim.ukf_filterpy import do_ukf_filterpy
 
 matplotlib.use('Agg')
@@ -277,7 +278,7 @@ def do_mppi(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic
         outputs = mppi_planner.mppi_mmodal(sim_state, global_U, U_anci, subkey, q_ref, collision_checker)
         best_u = outputs[0]
         new_u = outputs[1]
-        new_U = outputs[2]
+        global_U = outputs[2]
         min_cost = outputs[3]
         collision_free = outputs[4]
         all_costs = outputs[5]
@@ -455,12 +456,14 @@ def main(args):
         gsf_params['measurement_noises'] = [{"weight": 0.5, "R":  0.01},
                                             {"weight": 0.5, "R":  0.1}
                                             ]
-        outputs_gsf = do_gsf(copy.deepcopy(gsf_params))
+        # outputs_gsf = do_gsf(copy.deepcopy(gsf_params))
+        outputs_gsf = do_gsf_mppi(copy.deepcopy(gsf_params))
 
         # outputs_ckf = do_ckf(copy.deepcopy(params))
 
         # MPPI only
         outputs_mppi = do_mppi(copy.deepcopy(params), rng_keys[trial], do_mpc=False)
+        breakpoint()
 
         foldername, counter = uniquify('sim_results')
         os.mkdir(foldername) 

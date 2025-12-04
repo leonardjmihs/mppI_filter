@@ -172,7 +172,7 @@ class RRTStarPlanner(Planner):
         d, _ = self.calc_distance_and_angle(from_node, to_node)
         return from_node.cost + d
         
-    def discretizePath(self, path, pt_num):
+    def discretize_path(self, path, pt_num):
         # breakpoint()
         len_list = [0.0]
         for i in range(len(path)-1):

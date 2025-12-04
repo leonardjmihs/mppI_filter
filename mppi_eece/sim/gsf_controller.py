@@ -558,11 +558,11 @@ def do_gsf(params):
         states.append(x_current.copy())
 
         # cost diagnostics via planner using the chosen map theta
-        try:
-            out = planner.eval_U_seq(theta_map.reshape((-1, n_u)), theta_map, x_current, q_ref, cost_map)
-            cost = float(out[0])
-        except Exception:
-            cost = 0.0
+        # try:
+        #     out = planner.eval_U_seq(theta_map.reshape((-1, n_u)), theta_map, x_current, q_ref, cost_map)
+        #     cost = float(out[0])
+        # except Exception:
+        cost = 0.0
         costs.append(cost)
 
         mixture_records.append({"weights": weights.copy(), "mus": [m.copy() for m in mus], "Ps": [p.copy() for p in Ps]})

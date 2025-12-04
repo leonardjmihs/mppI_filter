@@ -93,7 +93,7 @@ class AncillaryController:
         best_states = best_states[:self.Nt, :]
         return best_cost, best_u_sol, best_states, all_planner_paths, all_mpc_paths
 
-    def plan_multi(self, start, q_ref, occupied, collision_checker, reset=False):
+    def plan_multi(self, start, q_ref, occupied, collision_checker, reset=True):
         self.planner.collision_checker = collision_checker
         paths = self.planner.plan(start, q_ref, reset=reset)
 
@@ -101,6 +101,8 @@ class AncillaryController:
         best_u_sol, best_states = None, None
         all_mpc_paths, all_planner_paths, all_control_sequences = [], [], []
         for path in paths:
+            if path is None:
+                continue
             A, b, rX0 = self.decompose_and_rotate_env(path, start, occupied)
             x_sol, u_sol, _ = self.solver.solve(np.zeros((self.nlmodel.n_dims, )), 
                                             rX0[-1,:], obstacles={'A': A, 'b': b},
@@ -128,10 +130,9 @@ class AncillaryController:
         else:
             A, b = pdc.convex_decomposition_2D(occupied, p, box)
         try:
-            X0, idx =  self.planner.discretizePath(p,self.Nt+1)
+            X0, idx =  self.planner.discretize_path(p,self.Nt+1)
         except Exception as e:
             print(f"Error in discretizing path: {e}")
-            breakpoint()
 
         thetas = np.ones((self.Nt+1, 1)) * start[2]
         X0_f = np.hstack((np.array(X0), thetas.reshape(-1,1)))

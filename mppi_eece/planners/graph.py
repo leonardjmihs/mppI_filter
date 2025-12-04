@@ -95,7 +95,6 @@ class GraphBuilder:
         if self.enable_profiling:
             self.profiler = cProfile.Profile()
     def check_if_in_graph(self, pt, graph):
-        print(graph)
         for node in graph:
             if np.allclose(node.pos, pt):
                 return True

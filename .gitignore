@@ -221,3 +221,4 @@ __marimo__/
 *acados_ocp.json
 *jit_tmp*
 *.o*
+*profiles*
