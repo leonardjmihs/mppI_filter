@@ -22,6 +22,7 @@ from mppi_eece.jax_mppi.mppi_planners import MPPI_Planner_Occup
 from mppi_eece.sim.do_mpc import gen_and_save_mpc_results, do_mpc
 from mppi_eece.sim.UKF_controller import do_ukf
 from mppi_eece.sim.ckf_controller import do_ckf
+from mppi_eece.sim.gsf_cem_controller import do_gsf_cem
 # from mppi_eece.sim.gsf_controller import do_gsf
 # from mppi_eece.sim.gsf_mppi import do_gsf
 from mppi_eece.sim.gsf_mppi import do_gsf_mppi
@@ -47,7 +48,7 @@ def trivial_problem1():
     # params['Nt'] = 30
     params['Nt'] = 9
 
-    params['n_samples'] = 100
+    params['n_samples'] = 250
 
     num_obs = 5
     low_val = jnp.array([-25.0, -5.0, 0.5])
@@ -63,10 +64,10 @@ def trivial_problem1():
 
     params['nlmodel'] = Unicycle({"lb": min_control, "ub": max_control}, dt=params['dt'])
     params['T'] = 24
-    sigma0 = np.diag(np.array([np.pi/4, 1.0]))
+    sigma0 = np.diag(np.array([np.pi/10, 1.0]))
     # params['sigma0'] = np.kron(np.eye(params['Nt']), sigma0)
     params['sigma0'] = np.kron(np.diag(1+np.arange(params['Nt'])[::-1]), sigma0)
-    params['temperature'] = 1.0
+    params['temperature'] = 10.0
     params['Q'] = np.diag([1.0, 1.0, 0.0])
     params['QT'] = np.diag([5.0, 5.0, 0.0])
     params['R'] = np.diag([0.1, 0.1])
@@ -93,7 +94,7 @@ def easy_problem1():
 
     params['nlmodel'] = Unicycle({"lb": min_control, "ub": max_control}, dt=params['dt'])
     params['T'] = 24
-    sigma0 = np.diag(np.array([np.pi/4, 1.0]))
+    sigma0 = np.diag(np.array([np.pi/20, 1.0]))
     params['sigma0'] = np.kron(np.eye(params['Nt']), sigma0)
     params['temperature'] = 1.0
     params['Q'] = np.diag([1.0, 1.0, 0.0])
@@ -415,7 +416,7 @@ def gen_and_save_mppi_results(params, outputs, foldername, counter, alg="mpc_ais
 
     states = np.array(states)
     costs = np.array(costs)
-    sampled_states = np.array(sampled_states)
+    # sampled_states = np.array(sampled_states)
     pic = plot_utils.plot_simulation_result(states, obs, goal=q_ref[:2], text="",  max_arrows=10, costmap=cost_map)
     pic_name = os.path.join(foldername, f'mppi_{alg}_{counter}.png')
     gif_name = os.path.join(foldername, f'mppi_{alg}_{counter}.gif')
@@ -452,19 +453,19 @@ def main(args):
         sigma0 = gsf_params['sigma0']
         # gsf_params['process_noises'] = [{"weight": 1.0, "Q":  sigma0*100}]
         # gsf_params['measurement_noises'] = [{"weight": 1.0, "R":  10.0}]
-        gsf_params['process_noises'] = [{"weight": 0.5, "Q":  sigma0*100},
-                                       {"weight": 0.5, "Q":  sigma0*10000}]
-        gsf_params['measurement_noises'] = [{"weight": 0.5, "R":  0.01},
-                                            {"weight": 0.5, "R":  0.1}
-                                            ]
+        # gsf_params['process_noises'] = [{"weight": 0.5, "Q":  sigma0*100},
+        #                                {"weight": 0.5, "Q":  sigma0*10000}]
+        # gsf_params['measurement_noises'] = [{"weight": 0.5, "R":  0.01},
+        #                                     {"weight": 0.5, "R":  0.1}
+                                            # ]
         # outputs_gsf = do_gsf(copy.deepcopy(gsf_params))
-        outputs_gsf = do_gsf_mppi(copy.deepcopy(gsf_params))
+        # outputs_gsf = do_gsf_mppi(copy.deepcopy(gsf_params))
+        outputs_gsf = do_gsf_cem(copy.deepcopy(gsf_params))
 
         # outputs_ckf = do_ckf(copy.deepcopy(params))
 
         # MPPI only
         outputs_mppi = do_mppi(copy.deepcopy(params), rng_keys[trial], do_mpc=False)
-        breakpoint()
 
         foldername, counter = uniquify('sim_results')
         os.mkdir(foldername) 

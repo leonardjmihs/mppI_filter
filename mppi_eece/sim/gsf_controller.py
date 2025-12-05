@@ -3,7 +3,7 @@
 Expanded Gaussian-Sum Filter (GSF) controller that grows components
 by using mixtures of process and measurement noises.
 
-Uses UKF_Controller for individual component updates.
+Uses UKF_Controller for individual component updates with adaptive noise.
 """
 
 import numpy as np
@@ -16,7 +16,7 @@ try:
     from mppi_eece.jax_mppi.mppi_planners import MPPI_Planner_Occup
     from mppi_eece.jax_mppi.collision_checker import CollisionChecker
     from mppi_eece.sim.grid import OccupGrid
-    from mppi_eece.sim.UKF_controller import UKF_Controller  # Import your UKF
+    from UKF_controller import UKF_Controller  # Import your UKF
 except Exception:
     MPPI_Planner_Occup = None
     CollisionChecker = None
@@ -68,7 +68,7 @@ class GSF_Controller_Expanded:
 
     # ---------------- predict & update using UKF methods ----------------
     
-    def predict_component(self, mu, P, Q):
+    def predict_component(self, mu, P, Q, m):
         """
         UKF Prediction step using UKF_Controller
         
@@ -79,6 +79,8 @@ class GSF_Controller_Expanded:
         Returns:
             mu_pred, P_pred, sigma_points_pred
         """
+        if m is None:
+            m = jnp.zeros_like(mu)
         mu_jnp = jnp.array(mu)
         P_jnp = jnp.array(P)
         Q_jnp = jnp.array(Q)
@@ -87,7 +89,8 @@ class GSF_Controller_Expanded:
         mu_pred, P_pred, sigma_pts_pred = self.ukf.predict(mu_jnp, P_jnp, Q_jnp)
         
         # Convert back to numpy for host-side operations
-        return np.array(mu_pred), np.array(P_pred), np.array(sigma_pts_pred)
+        m_contrib = np.expand_dims(m, axis=-1)
+        return np.array(mu_pred+m), np.array(P_pred+m_contrib@m_contrib.T), np.array(sigma_pts_pred)
 
     def update_component(self, mu_pred, P_pred, sigma_pts, y_meas, R, 
                         x_current, q_ref, cost_map):
@@ -108,11 +111,8 @@ class GSF_Controller_Expanded:
             mu_pred_jnp, P_pred_jnp, sigma_pts_jnp,
             y_meas, R_jnp, x_current_jnp, q_ref_jnp, cost_map
         )
-
-        mu_upd, P_upd, was_reset = self.ukf.check_and_reset(mu_upd, P_upd, innovation)
         
         # Calculate predicted measurement and innovation covariance
-        # (recompute for diagnostics - could optimize by modifying UKF.update to return these)
         meas_sigma = jax.vmap(
             lambda theta: self.ukf.measurement_function(theta, x_current_jnp, q_ref_jnp, cost_map)
         )(sigma_pts_jnp)
@@ -125,8 +125,8 @@ class GSF_Controller_Expanded:
         meas_diff = meas_sigma - y_pred
         S = jnp.sum(Wc * meas_diff**2) + R_jnp
         
-        # Compute log-likelihood (more numerically stable than likelihood)
-        log_likelihood = -0.5 * (jnp.log(2.0 * jnp.pi * S) + (innovation ** 2) / S)
+        # Compute log-likelihood (more numerically stable)
+        log_likelihood = -0.5 * (jnp.log(2.0 * jnp.pi * S + 1e-10) + (innovation ** 2) / (S + 1e-10))
         
         # Convert back to numpy
         return (np.array(mu_upd), np.array(P_upd), float(log_likelihood), 
@@ -177,7 +177,6 @@ class GSF_Controller_Expanded:
                 term_i = wi * (Pi + np.outer(m[i], m[i]))
                 term_j = wj * (Pj + np.outer(m[j], m[j]))
                 Pmerged = (term_i + term_j) / (wmerged + 1e-12) - np.outer(mmerged, mmerged)
-                # replace i with merged and remove j
                 w[i] = wmerged
                 m[i] = mmerged
                 P[i] = Pmerged
@@ -206,8 +205,8 @@ class GSF_Controller_Expanded:
 
     def manage_mixture(self, weights, mus, Ps):
         w_p, m_p, P_p = self.prune(weights, mus, Ps)
-        # w_m, m_m, P_m = self.merge(w_p, m_p, P_p)  # Re-enabled merge
-        w_c, m_c, P_c = self.cap(w_p, m_p, P_p)
+        w_m, m_m, P_m = self.merge(w_p, m_p, P_p)  # Re-enabled merge
+        w_c, m_c, P_c = self.cap(w_m, m_m, P_m)
         return w_c, m_c, P_c
 
     def _tree_flatten(self):
@@ -233,20 +232,20 @@ class GSF_Controller_Expanded:
                    ukf_alpha=alpha, ukf_beta=beta, ukf_kappa=kappa)
 
 
-# ------------------ main driver ------------------
 def do_gsf(params):
     """
     params: dict expects (not exhaustive)
       dt, Nt, start, q_ref, obs, nlmodel, T
       sigma0 : initial covariance (array or scalar)
-      process_noises : list [{"weight":w, "Q": Q_array}, ...]
-      measurement_noises : list [{"weight":w, "R": scalar_or_matrix}, ...]
+      process_noises : list [{"weight":w, "Q": Q_array}, ...] (optional)
+      measurement_noises : list [{"weight":w, "R": scalar_or_matrix}, ...] (optional)
       wmin, gamma, Jmax
-      optionally: planner, grid/collision checker or necessary args to construct them
+      adaptive_R: bool (default True) - use adaptive measurement noise
+      R_scale: float (default 0.5) - scale factor for adaptive R
+      R_min: float (default 1.0) - minimum measurement noise
     Returns:
       states, costs, mixture_records, cov_traces, innovations
     """
-    # --- extract core params ---
     dt = params.get("dt", 0.1)
     Nt = params.get("Nt", 10)
     start = np.array(params["start"], dtype=float)
@@ -258,19 +257,25 @@ def do_gsf(params):
     sigma0_arr = np.eye(Nt * params.get("n_u", getattr(nlmodel, "n_u", 2))) * float(sigma0) \
         if np.isscalar(sigma0) else np.array(sigma0, dtype=float)
 
-    # INCREASED process noise for better exploration
+    n_u = params.get("n_u", getattr(nlmodel, "n_u", 2))
     process_noises = params.get("process_noises", [
-        {"weight": 0.4, "Q": np.eye(sigma0_arr.shape[0]) * 0.5},
-        {"weight": 0.3, "Q": np.eye(sigma0_arr.shape[0]) * 2.0},
-        {"weight": 0.3, "Q": np.eye(sigma0_arr.shape[0]) * 5.0}
+        {"weight": 0.5, "Q": np.eye(sigma0_arr.shape[0]) * 0.5, 'm': np.zeros((Nt*n_u,))},
+        {"weight": 0.5, "Q": np.eye(sigma0_arr.shape[0]) * 0.5, 'm': np.ones((Nt*n_u,))},
+        # {"weight": 0.3, "Q": np.eye(sigma0_arr.shape[0]), 'm': np.zeros_like(sigma0_arr)}
     ])
     
-    measurement_noises = params.get("measurement_noises", [{"weight": 1.0, "R": 10.0}])
+    # adaptive_R = params.get("adaptive_R", True)
+    adaptive_R =False 
+    R_scale = params.get("R_scale", 0.5)
+    R_min = params.get("R_min", 1.0)
+    
+    # Base measurement noise (used if not adaptive)
+    measurement_noises_base = params.get("measurement_noises", [{"weight": 1.0, "R": 10.0}])
 
     # mixture management params
     wmin = params.get("wmin", 1e-6)
     gamma = params.get("gamma", 4.0)
-    Jmax = params.get("Jmax", 4)
+    Jmax = params.get("Jmax", 3)
 
     # planner / collision checker
     planner = params.get("planner", None)
@@ -296,11 +301,8 @@ def do_gsf(params):
         else:
             cost_map = params.get("cost_map_obj", None)
 
-    # instantiate GSF controller
-    n_u = params.get("n_u", getattr(nlmodel, "n_u", 2))
     gsf = GSF_Controller_Expanded(nlmodel, planner, n_u=n_u, N=Nt, wmin=wmin, gamma=gamma, Jmax=Jmax)
 
-    # initial mixture
     if "mixture_init" in params:
         weights = params["mixture_init"]["weights"]
         mus = [np.array(m, dtype=float) for m in params["mixture_init"]["mus"]]
@@ -311,7 +313,6 @@ def do_gsf(params):
         mus = [jnp.array(U_init, dtype=float)]
         Ps = [jnp.array(sigma0_arr, dtype=float)]
 
-    # containers
     states = [start.copy()]
     costs = []
     mixture_records = []
@@ -322,12 +323,12 @@ def do_gsf(params):
     innovations = []
     mu_states = []
     num_gmm_components = []
+    adaptive_R_history = []
     x_current = start.copy()
     t = 0.0
     max_steps = int(np.ceil(T / dt))
 
     for step in range(max_steps):
-        # --- PREDICT EXPANSION ---
         predicted_weights = []
         predicted_mus = []
         predicted_Ps = []
@@ -337,14 +338,44 @@ def do_gsf(params):
             for mode in process_noises:
                 alpha_r = float(mode.get("weight", 1.0))
                 Q_r = np.array(mode["Q"], dtype=float)
+                m = np.array(mode['m'])
                 
-                # Use GSF's predict_component (which uses UKF internally)
-                mu_p, P_p, sigma_pts_p = gsf.predict_component(muj, Pj, Q_r)
+                mu_p, P_p, sigma_pts_p = gsf.predict_component(muj, Pj, Q_r, m=m)
                 
                 predicted_weights.append(wj * alpha_r)
                 predicted_mus.append(mu_p)
                 predicted_Ps.append(P_p)
                 predicted_sigma_pts.append(sigma_pts_p)
+
+        if adaptive_R:
+            # Evaluate costs for all predicted components to get spread
+            y_preds_for_R = []
+            for mu_pred in predicted_mus:
+                try:
+                    y_pred_temp = gsf.ukf.measurement_function(
+                        jnp.array(mu_pred), 
+                        jnp.array(x_current), 
+                        jnp.array(q_ref), 
+                        cost_map
+                    )
+                    y_preds_for_R.append(float(y_pred_temp))
+                except Exception:
+                    continue
+            
+            if len(y_preds_for_R) > 1:
+                # Convert to costs (negative of measurement)
+                costs_pred = np.array([-y for y in y_preds_for_R])
+                cost_spread = float(np.std(costs_pred))
+                R_adaptive = max(cost_spread * R_scale, R_min)
+            else:
+                R_adaptive = R_min
+            
+            # Use adaptive R for all measurement modes
+            measurement_noises = [{"weight": 1.0, "R": R_adaptive}]
+            adaptive_R_history.append(R_adaptive)
+        else:
+            measurement_noises = measurement_noises_base
+            adaptive_R_history.append(measurement_noises[0]["R"])
 
         # --- UPDATE EXPANSION ---
         updated_weights = []
@@ -399,14 +430,9 @@ def do_gsf(params):
         num_components = int(len(w_list))
         num_gmm_components.append(num_components)
         
-        # Set for next iteration (with control clipping)
+        # Set for next iteration (DON'T clip means, only clip when applying)
         weights = w_list
-        mus = []
-        for m in mus_list:
-            mu_arr = np.array(m).reshape(-1, n_u)
-            mu_clipped = np.clip(mu_arr, nlmodel.control_bounds[0], nlmodel.control_bounds[1])
-            mus.append(mu_clipped.ravel())
-        
+        mus = [np.array(m) for m in mus_list]
         Ps = [np.array(p) for p in Ps_list]
 
         # Diagnostics
@@ -417,12 +443,14 @@ def do_gsf(params):
         idx_map = int(np.argmax(weights))
         theta_map = np.array(mus[idx_map])
         
-        cov_norms_map.append([float(np.linalg.norm(Ps[idx_map], ord=2))])
+        cov_norms_map.append([float(np.linalg.norm(Ps[idx_map]))])
         cov_traces_map.append([float(np.trace(Ps[idx_map]))])
         innovations_map.append([float(0.0 - y_preds_local[idx_map])])
         
-        # Apply control
-        u_opt = theta_map[:n_u]
+        # Apply control (with clipping)
+        u_opt_raw = theta_map[:n_u]
+        u_opt = np.clip(u_opt_raw, nlmodel.control_bounds[0], nlmodel.control_bounds[1])
+        
         x_current = nlmodel.dynamics_jax(x_current, u_opt, dt=dt, 
                                         params=getattr(nlmodel, "nominal_params", None))
         
@@ -438,7 +466,12 @@ def do_gsf(params):
             
             for si in range(n_sigmas):
                 theta_sigma = sigma_pts[si]
-                u_seq = np.array(theta_sigma).reshape((-1, n_u))
+                # Clip controls when simulating
+                u_seq = np.clip(
+                    np.array(theta_sigma).reshape((-1, n_u)),
+                    nlmodel.control_bounds[0], 
+                    nlmodel.control_bounds[1]
+                )
                 state = x_current.copy()
                 trajs[ji * n_sigmas + si, 0, :] = state
                 
@@ -448,7 +481,8 @@ def do_gsf(params):
                     trajs[ji * n_sigmas + si, tt + 1, :] = state
         
         print(f"Step {step}: x={x_current[:2]}, goal={q_ref[:2]}, "
-              f"weights={[f'{w:.3f}' for w in weights]}, n_comp={num_components}")
+              f"weights={[f'{w:.3f}' for w in weights]}, n_comp={num_components}, "
+              f"R_adaptive={adaptive_R_history[-1]:.2f}")
         
         mu_states.append(trajs)
         states.append(x_current.copy())
@@ -464,7 +498,6 @@ def do_gsf(params):
         
         t += dt
         
-        # Goal check
         try:
             if np.linalg.norm(x_current[:2] - q_ref[:2]) < params.get("goal_tol", 0.5):
                 print(f"GSF reached goal at step {step}, t={t:.2f}")
@@ -473,4 +506,4 @@ def do_gsf(params):
             pass
     
     return (states, costs, mu_states, cov_norms_map, cov_traces_map, 
-            innovations_map, num_gmm_components)
+            innovations_map, num_gmm_components, adaptive_R_history)

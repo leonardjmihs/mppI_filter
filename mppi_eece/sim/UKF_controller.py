@@ -51,7 +51,32 @@ class UKF_Controller:
         self.cov_trace_threshold = float(cov_trace_threshold)
         self.innovation_threshold = float(innovation_threshold)
         self.reset_P_scale = float(reset_P_scale)
+        self.Phi_shift = self._build_shift_jacobian()
     
+    def _build_shift_jacobian(self):
+        """
+        Build the constant shift operator Jacobian matrix.
+        
+        For control sequence [u_0, u_1, ..., u_{N-1}]:
+        Shift: [u_0, u_1, ..., u_{N-1}] → [u_1, u_2, ..., u_{N-1}, u_{N-1}]
+        
+        Returns:
+            Phi: [n_theta, n_theta] shift matrix
+        """
+        n_u = self.n_u
+        N = self.N
+        n_theta = self.n_theta
+        
+        Phi = jnp.zeros((n_theta, n_theta))
+        
+        # Shift each control forward (copy from next position)
+        for i in range(N - 1):
+            Phi = Phi.at[i*n_u:(i+1)*n_u, (i+1)*n_u:(i+2)*n_u].set(jnp.eye(n_u))
+        
+        # Last control copies from itself (duplicate)
+        Phi = Phi.at[(N-1)*n_u:N*n_u, (N-1)*n_u:N*n_u].set(jnp.eye(n_u))
+        
+        return Phi 
     def shift_controls(self, theta):
         """
         Shift operator: Phi(theta)
@@ -65,7 +90,8 @@ class UKF_Controller:
         theta_reshaped = theta.reshape((-1, self.n_u))
         theta_shifted = jnp.roll(theta_reshaped, -1, axis=0)
         # Keep last control
-        theta_shifted = theta_shifted.at[-1].set(theta_reshaped[-1])
+        # theta_shifted = theta_shifted.at[-1].set(theta_reshaped[-1])
+        theta_shifted = theta_shifted.at[-1].set(jnp.zeros((self.n_u,)))
         return theta_shifted.ravel()
     
     def generate_sigma_points(self, mu, P):
@@ -141,30 +167,50 @@ class UKF_Controller:
         Returns:
             mu_pred, P_pred, sigma_points_pred
         """
-        # Generate sigma points
-        sigma_points = self.generate_sigma_points(mu, P)
+        # # Generate sigma points
+        # sigma_points = self.generate_sigma_points(mu, P)
         
-        # Propagate through shift dynamics
-        sigma_points_pred = jax.vmap(self.shift_controls)(sigma_points)
+        # # Propagate through shift dynamics
+        # sigma_points_pred = jax.vmap(self.shift_controls)(sigma_points)
         
-        # Compute predicted mean
-        mu_pred = jnp.sum(self.Wm[:, None] * sigma_points_pred, axis=0)
+        # # Compute predicted mean
+        # mu_pred = jnp.sum(self.Wm[:, None] * sigma_points_pred, axis=0)
         
-        # Compute predicted covariance (use symmetric / jittered form for stability)
-        diff = sigma_points_pred - mu_pred
-        P_pred = jnp.sum(self.Wc[:, None, None] *
-                        (diff[:, :, None] @ diff[:, None, :]),
-                        axis=0) + Q
+        # # Compute predicted covariance (use symmetric / jittered form for stability)
+        # diff = sigma_points_pred - mu_pred
+        # P_pred = jnp.sum(self.Wc[:, None, None] *
+        #                 (diff[:, :, None] @ diff[:, None, :]),
+        #                 axis=0) + Q
 
-        # enforce symmetry and add tiny jitter to preserve PD
+        # # enforce symmetry and add tiny jitter to preserve PD
+        # P_pred = (P_pred + P_pred.T) / 2.0
+        # P_pred = P_pred + jnp.eye(self.n_theta) * 1e-9
+
+        # # defensive NaN check (kept but non-blocking)
+        # if jnp.any(jnp.isnan(mu_pred)):
+        #     breakpoint()
+        #     raise RuntimeError("NaN in UKF predicted mean")
+        # return mu_pred, P_pred, sigma_points_pred
+        mu_pred = self.shift_controls(mu)
+        # For covariance, we need the Jacobian of shift_controls
+        # Since shift is linear, the Jacobian is constant: Φ
+    
+        # Linear prediction: P_pred = Φ @ P @ Φ^T + Q
+        P_pred = self.Phi_shift @ P @ self.Phi_shift.T + Q
+    
+        # Enforce symmetry and add tiny jitter to preserve PD
         P_pred = (P_pred + P_pred.T) / 2.0
         P_pred = P_pred + jnp.eye(self.n_theta) * 1e-9
-
-        # defensive NaN check (kept but non-blocking)
+    
+        # Defensive NaN check
         if jnp.any(jnp.isnan(mu_pred)):
-            # don't breakpoint in library code; raise to signal upstream
+            breakpoint()
             raise RuntimeError("NaN in UKF predicted mean")
-
+    
+        # Generate sigma points from predicted distribution
+        # (still needed for update step)
+        sigma_points_pred = self.generate_sigma_points(mu_pred, P_pred)
+    
         return mu_pred, P_pred, sigma_points_pred
     
     def update(self, mu_pred, P_pred, sigma_points_pred, 
