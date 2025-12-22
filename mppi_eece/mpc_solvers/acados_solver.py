@@ -128,7 +128,7 @@ class AcadosSolver(MPCSolver):
 
         # Set running yref sequence
         if x_ref is None:
-            x_ref = np.tile(np.zeros(nx), (N+1, 1))
+            x_ref = np.tile([*goal[0:2], 0], (N+1, 1))
         for i in range(N):
             yref_i = np.concatenate([x_ref[i], np.zeros(nu)])
             solver.set(i, 'yref', yref_i)

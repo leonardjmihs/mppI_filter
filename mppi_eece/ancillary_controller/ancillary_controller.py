@@ -39,7 +39,7 @@ class AncillaryController:
         if planner_type.lower() == 'rrt':
             self.planner = RRTStarPlanner(
                     collision_checker=None,
-                    max_iter=planner_params.get('max_iter', 250),
+                    max_iter=planner_params.get('max_iter', 300),
                     expand_dist=planner_params.get('expand_dist', 1.0),
                     goal_sample_rate=planner_params.get('goal_sample_rate', 0.2),
                     connect_circle_dist=planner_params.get('connect_circle_dist', 30.0),
@@ -64,7 +64,8 @@ class AncillaryController:
                     )
 
     def plan_best(self, start, q_ref, occupied, collision_checker,reset=False):
-        self.planner.collision_checker = collision_checker
+        # self.planner.collision_checker = collision_checker
+        self.planner.set_collision_checker(collision_checker)
         paths = self.planner.plan(start, q_ref, reset=reset)
 
         best_cost = np.inf
@@ -76,11 +77,12 @@ class AncillaryController:
             A, b, rX0 = self.decompose_and_rotate_env(path, start, occupied)
             x_sol, u_sol, _ = self.solver.solve(np.zeros((self.nlmodel.n_dims, )), 
                                             rX0[-1,:], obstacles={'A': A, 'b': b},
-                                            reference={'x_ref':rX0,
+                                            reference={
+                                                # 'x_ref':rX0,
                                                        'u_init':np.zeros((self.Nt+1, self.nlmodel.n_controls)),
+                                                        #  'u_init':np.kron(np.ones((1, self.Nt+1)), [0.0, 3.0]),
                                                        'path':rX0,
                                                        'w_path':1.0})
-            
             all_mpc_paths.append(x_sol)
             current_cost, states = self.eval_trajectory(u_sol, start, q_ref, dt = self.T/self.Nt)
             if current_cost < best_cost:

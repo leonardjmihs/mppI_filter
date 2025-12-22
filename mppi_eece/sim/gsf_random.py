@@ -20,13 +20,14 @@ import json
 import copy
 from mppi_eece.jax_mppi.mppi_planners import MPPI_Planner_Occup
 from mppi_eece.sim.do_mpc import gen_and_save_mpc_results, do_mpc
-from mppi_eece.sim.UKF_controller import do_ukf
+from mppi_eece.sim.UKF_controller import do_ukf_with_pcrb
 from mppi_eece.sim.ckf_controller import do_ckf
 from mppi_eece.sim.gsf_cem_controller import do_gsf_cem
 # from mppi_eece.sim.gsf_controller import do_gsf
 # from mppi_eece.sim.gsf_mppi import do_gsf
 from mppi_eece.sim.gsf_mppi import do_gsf_mppi
 # from mppi_eece.sim.ukf_filterpy import do_ukf_filterpy
+from mppi_eece.sim.pcrb import PCRBController
 
 matplotlib.use('Agg')
 
@@ -67,17 +68,20 @@ def trivial_problem1():
     sigma0 = np.diag(np.array([np.pi/10, 1.0]))
     # params['sigma0'] = np.kron(np.eye(params['Nt']), sigma0)
     params['sigma0'] = np.kron(np.diag(1+np.arange(params['Nt'])[::-1]), sigma0)
-    params['temperature'] = 10.0
+    params['temperature'] = 100.0
     params['Q'] = np.diag([1.0, 1.0, 0.0])
     params['QT'] = np.diag([5.0, 5.0, 0.0])
     params['R'] = np.diag([0.1, 0.1])
+    # params['R'] = np.diag([0.01, 0.01])
     return params
 
 def easy_problem1():
     params = {}
     params['dt'] = 0.2
-    params['Nt'] = 30
-    params['n_samples'] = 100
+    # params['Nt'] = 30
+    params['Nt'] = 9
+
+    params['n_samples'] = 250
 
     num_obs = 5
     low_val = jnp.array([-25.0, -5.0, 0.5])
@@ -94,12 +98,13 @@ def easy_problem1():
 
     params['nlmodel'] = Unicycle({"lb": min_control, "ub": max_control}, dt=params['dt'])
     params['T'] = 24
-    sigma0 = np.diag(np.array([np.pi/20, 1.0]))
+    sigma0 = np.diag(np.array([np.pi/10, 1.0]))
     params['sigma0'] = np.kron(np.eye(params['Nt']), sigma0)
-    params['temperature'] = 1.0
+    params['temperature'] = 100.0
     params['Q'] = np.diag([1.0, 1.0, 0.0])
     params['QT'] = np.diag([5.0, 5.0, 0.0])
-    params['R'] = np.diag([0.1, 0.1])
+    # params['R'] = np.diag([0.1, 0.1])
+    params['R'] = np.diag([0.01, 0.01])
     return params
 
 def hard_problem1():
@@ -161,9 +166,6 @@ def rand_problem1():
     params['R'] = np.diag([0.1, 0.1])
     return params
 
-def rmse(a, b):
-    return np.sqrt(np.mean((a - b) ** 2))
- 
 def do_mppi(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic_weight=0.0, solver="ipopt"):
     dt = params['dt']
     Nt = params['Nt']
@@ -214,25 +216,6 @@ def do_mppi(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic
                                                solver_type='acados',
                                                planner_type='topo_prm')
 
-    # planner = TopoPRMPlanner(collision_checker=collision_checker, resolution=resolution, 
-    #                   max_raw_path=10, 
-    #                   max_raw_path2=10,
-    #                   reserve_num=num_anci, 
-    #                   ratio_to_short=2.0,
-    #                   sample_sz_p=0.0,
-    #                   occup_value=100,
-    #                   max_time=0.1)
-    # planner.occup_grid = grid.occup_grid
-    # planner.origin = origin
-    # planner.resolution = resolution
-    # planner.wh = wh
-    # dis = nlmodel.control_bounds[1][1] * nlmodel.dt * Nt
-    # ns = 10
-
-    # dxdt, state, control = nlmodel.cas_ode()
-    # ode = ca.Function('ode', [state, control], [dxdt]) 
-    # f = cas_shooting_solver(nlmodel, int(Nt/2), ns=ns, dt=nlmodel.dt*2, ode=ode, solver=solver)
-    # box = np.array([[1, 2]])
     timestep_reached = -1
 
     mppi_planner = MPPI_Planner_Occup(sigma=sigma0,
@@ -252,7 +235,32 @@ def do_mppi(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic
     cost = 0
     timestep_prog = tqdm(np.arange(0, T, dt))
     iter = 0
-
+    # ============ PCRB INITIALIZATION ============
+    Q_process = sigma0  # Control drift
+    R_meas = 10.0 # Measurement noise variance
+    nu = 2  # Control dimension
+    dim = Nt * nu
+    sigma_r = np.sqrt(R_meas)
+    n_pcrb_samples = 1000
+    epsilon = 1e-4
+    
+    # Create PCRB controller instance
+    pcrb_controller = PCRBController(
+        Nt=Nt,
+        nu=nu,
+        Q=np.eye(dim) *10000,
+        sigma_r=sigma_r,
+        n_samples=n_pcrb_samples
+    )
+    
+    # Initialize Fisher Information Matrix
+    J_k = jnp.eye(dim) * 1e-6
+    
+    pcrb_history = []
+    J_history = []
+    mu_history = []
+    gradient_norms = []
+    # ============================================
     sampled_states = []
     for t in timestep_prog:
         rng_key, subkey = jax.random.split(rng_key)
@@ -285,7 +293,26 @@ def do_mppi(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic
         collision_free = outputs[4]
         all_costs = outputs[5]
         all_state_seq = outputs[6]
+        # ============ PCRB UPDATE ============
+            # Complete PCRB step using PCRBController
+        J_k, pcrb_bound, grad_norms = pcrb_controller.pcrb_step(
+            J_k=J_k,
+            mu=global_U,
+            P=jnp.eye(Nt * 2) * 1e-6,
+            x_current=sim_state,
+            q_ref=q_ref,
+            mppi_planner=mppi_planner,
+            collision_checker=collision_checker,
+            epsilon=epsilon
+        )
+            
+        # Store
+        pcrb_history.append(pcrb_bound)
+        J_history.append(np.array(J_k))
+        gradient_norms.append(np.mean(grad_norms))
+        # ============================================ 
 
+        mu_history.append(global_U.copy())
 
         cost, _ = ancillary_controller.eval_trajectory(outputs[1], sim_state, q_ref, dt=dt)
 
@@ -302,15 +329,22 @@ def do_mppi(params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic
         costs.append(cost)
         total_costs += cost
         iter += 1
-
+        if np.linalg.norm(sim_state[:2] - q_ref[:2]) < 0.5:
+            break
     return (states,
             costs, 
             sampled_states,
             timestep_reached, 
-            global_us,)
+            global_us,
+            pcrb_history,
+            J_history,
+            mu_history)
 
-def compare_mppi_to_mpc(mppi_outputs, params, rng_key, do_mpc=True, ais_iters=0, base_alg=False, heuristic_weight=0.0, solver="ipopt"):
+def rmse(a, b):
+    # return np.sqrt(np.mean((e - b) ** 2))
+    return np.sqrt((a-b) @ (a-b).T)
 
+def compare_control_to_mpc(mppi_outputs, params):
     Nt = params['Nt']
     start = params['start']
     q_ref = params['q_ref']
@@ -322,7 +356,7 @@ def compare_mppi_to_mpc(mppi_outputs, params, rng_key, do_mpc=True, ais_iters=0,
     QT = params['QT']
 
     states = mppi_outputs[0]
-    global_us = mppi_outputs[4]
+    global_us = mppi_outputs[-1]
     obs = params['obs']
     resolution = 0.5
     origin = np.array([-40, -10])
@@ -346,55 +380,65 @@ def compare_mppi_to_mpc(mppi_outputs, params, rng_key, do_mpc=True, ais_iters=0,
                                                     q_ref,
                                                     occupied,
                                                     collision_checker=collision_checker)
-        # best_cost, best_u_sol, best_states, all_planner_paths, all_mpc_paths,solver = find_mpc(states[i],
-        #                 q_ref,
-        #                 Nt,
-        #                 T,
-        #                 occupied,
-        #                 Q=Q,
-        #                 QT=QT,
-        #                 R=R,
-        #                 collision_checker=collision_checker,
-        #                 eval_trajectory=eval_trajectory,
-        #                 num_sides=9,
-        #                 solver=solver)
             
         optimal_us.append(best_u_sol)
         optimal_costs.append(best_cost)
         optimal_states.append(best_states)
-
-    # Compute RMSE between MPPI and MPC control trajectories.
-    # For each timestep i, if MPC failed (best_u_sol is None) we skip that timestep.
-    # MPC provides Nt controls applied over horizon T with control step T/Nt.
-    # MPPI provides controls at the simulation dt. We upsample the MPC controls
-    # to the MPPI dt by holding each MPC control constant over its interval.
-
     rmse_per_timestep = []
     for i, u_mpc in enumerate(optimal_us):
         # skip if MPC failed to produce a control sequence
         if u_mpc is None:
+            rmse_per_timestep.append(np.nan)
             continue
+
 
         # corresponding MPPI control sequence at this timestep
         try:
-            u_mppi = np.asarray(global_us[i])
+            u_mppi = np.asarray(global_us[i]).reshape(u_mpc.shape)
         except Exception:
             # if indexing fails, skip
+            rmse_per_timestep.append(np.nan)
             continue
 
         # align lengths (compare up to the shorter horizon)
         L = min(len(u_mpc), len(u_mppi))
         if L <= 0:
+            rmse_per_timestep.append(np.nan)
             continue
         err = rmse(u_mpc[:L], u_mppi[:L])
-        rmse_per_timestep.append(err)
+        rmse_per_timestep.append(np.abs(err))
+    return optimal_us, optimal_states, optimal_costs, rmse_per_timestep
 
-    # summary stats
-    avg_rmse = float(np.mean(rmse_per_timestep)) if len(rmse_per_timestep) > 0 else float('nan')
-    print(f"MPPI vs MPC control RMSE over {len(rmse_per_timestep)} timesteps: avg={avg_rmse:.4f}")
 
-    return mppi_outputs, (optimal_us, optimal_states, optimal_costs, rmse_per_timestep)
+def plot_rmse_pcrg(rmse_per_timestep, pcrb_history, J_history, foldername, counter, alg="ukf"):
+    plt.figure()
 
+    pcrb_std = np.sqrt(np.array([np.linalg.inv(J).diagonal() for J in J_history]))
+    for dim in range(2):
+        plt.subplot(3,1,dim+1)
+        plt.plot(pcrb_std[:, dim], label=f'{alg} PCRB std dim {dim}')
+        plt.legend()
+    
+    plt.subplot(3,1,3)
+    trace_rmse = []
+    for rmse in rmse_per_timestep:
+        if np.isscalar(rmse):
+            trace_rmse.append(np.nan)
+        else:
+            trace_rmse.append(np.trace(rmse))
+    valid_idx = ~np.isnan(trace_rmse)
+    plt.plot( np.array(pcrb_history)[valid_idx] / np.array(trace_rmse)[valid_idx], label=f'{alg} PCRB efficiency')
+
+    plt.legend()
+    pic_name = os.path.join(foldername, f'rmse_pcrb_{alg}_{counter}.png')
+    plt.savefig(pic_name)
+    plt.close()
+
+    plt.figure()
+    plt.title(f'{alg} RMSE Trace')
+    plt.plot(trace_rmse, label='RMSE trace')
+    pic_name = os.path.join(foldername, f'rmse_trace_{alg}_{counter}.png')
+    plt.savefig(pic_name)
 
 def gen_and_save_mppi_results(params, outputs, foldername, counter, alg="mpc_ais"):
     obs = params['obs']
@@ -431,6 +475,30 @@ def gen_and_save_mppi_results(params, outputs, foldername, counter, alg="mpc_ais
 
     pic.savefig(pic_name)
 
+def to_2d(data):
+    if data is None:
+        return None
+    if len(data) == 0:
+        return None
+    # detect nested
+    first = data[0]
+    if isinstance(first, (list, tuple, np.ndarray)):
+        maxc = max(len(row) for row in data)
+        arr = np.full((len(data), maxc), np.nan, dtype=float)
+        for i, row in enumerate(data):
+            for j, val in enumerate(row):
+                try:
+                    arr[i, j] = float(val)
+                except Exception:
+                    arr[i, j] = np.nan
+        return arr
+    else:
+        # 1D sequence
+        try:
+            return np.array(data, dtype=float)
+        except Exception:
+            return None
+
 def main(args):
     solver = args.solver if hasattr(args, 'solver') else "ipopt"
     problem_type = args.problem_type if hasattr(args, 'problem_type') else "random"
@@ -450,7 +518,7 @@ def main(args):
         
         # MPC only
         gsf_params = copy.deepcopy(params)
-        sigma0 = gsf_params['sigma0']
+        # sigma0 = gsf_params['sigma0']
         # gsf_params['process_noises'] = [{"weight": 1.0, "Q":  sigma0*100}]
         # gsf_params['measurement_noises'] = [{"weight": 1.0, "R":  10.0}]
         # gsf_params['process_noises'] = [{"weight": 0.5, "Q":  sigma0*100},
@@ -460,16 +528,39 @@ def main(args):
                                             # ]
         # outputs_gsf = do_gsf(copy.deepcopy(gsf_params))
         # outputs_gsf = do_gsf_mppi(copy.deepcopy(gsf_params))
-        outputs_gsf = do_gsf_cem(copy.deepcopy(gsf_params))
 
-        # outputs_ckf = do_ckf(copy.deepcopy(params))
-
-        # MPPI only
-        outputs_mppi = do_mppi(copy.deepcopy(params), rng_keys[trial], do_mpc=False)
-
+        # outputs_ukf = do_ukf_with_pcrb(copy.deepcopy(gsf_params))
+        # outputs_gt_ukf = compare_control_to_mpc(outputs_ukf, copy.deepcopy(params)) 
+        # # Create folder for results
         foldername, counter = uniquify('sim_results')
         os.mkdir(foldername) 
-        param_name = os.path.join(foldername, f'params_{counter}')
+        # param_name = os.path.join(foldername, f'params_{counter}')
+        # gen_and_save_mppi_results(copy.deepcopy(params), outputs_ukf, foldername, counter, alg="ukf")
+        # plot_rmse_pcrg(outputs_gt_ukf[3], outputs_ukf[9], outputs_ukf[10], foldername, counter, alg="ukf")
+
+        outputs_gsf = do_gsf_cem(copy.deepcopy(gsf_params))
+        outputs_gt_gsf = compare_control_to_mpc(outputs_gsf, copy.deepcopy(params)) 
+        gen_and_save_mppi_results(copy.deepcopy(params), outputs_gsf, foldername, counter, alg="gsf")
+        plot_rmse_pcrg(outputs_gt_gsf[3], outputs_gsf[4], outputs_gsf[5], foldername, counter, alg="gsf")
+
+        # outputs_mppi = do_mppi(copy.deepcopy(params), rng_keys[trial], do_mpc=False)
+        # outputs_gt_mppi = compare_control_to_mpc(outputs_mppi, copy.deepcopy(params)) 
+        # gen_and_save_mppi_results(copy.deepcopy(params), outputs_mppi, foldername, counter, alg="mppi")
+        # plot_rmse_pcrg(outputs_gt_mppi[3], outputs_mppi[5], outputs_mppi[6], foldername, counter, alg="mppi")
+
+        weights = outputs_gsf[-2]
+        num_gaussian_history = [len(w) for w in weights]
+
+        plt.figure()
+        plt.title('Number of GSF Components over Time')
+        plt.plot(num_gaussian_history, label='Number of GSF Components')
+        plt.xlabel('Timestep')
+        plt.ylabel('Number of Components')
+        plt.grid(True)
+        pic_name = os.path.join(foldername, f'num_gsf_components_{counter}.png')
+        plt.savefig(pic_name)
+        plt.close()
+
         with open(param_name, 'w') as file:
             params_copy.pop('nlmodel')
             params_copy['start'] = params_copy['start'].tolist()
@@ -480,154 +571,127 @@ def main(args):
             params_copy['QT'] = params_copy['QT'].tolist()
             params_copy['R'] = params_copy['R'].tolist()
             json.dump(params_copy, file)
-        gen_and_save_mppi_results(copy.deepcopy(params), outputs_gsf, foldername, counter, alg="ukf")
         # Plot GSF diagnostics (per-component cov norms/traces/innovations) and trajectories
-        try:
-            # outputs_gsf expected variants: unpack robustly
-            cov_norms_map = None
-            cov_traces_map = None
-            innovations_map = None
-            num_gaussians = None
-            mu_states = None
+        # try:
+        #     # outputs_gsf expected variants: unpack robustly
+        #     cov_norms_map = None
+        #     cov_traces_map = None
+        #     innovations_map = None
+        #     num_gaussians = None
+        #     mu_states = None
 
-            # try canonical unpack
-            try:
-                _, _, mu_states, cov_norms_map, cov_traces_map, innovations_map, num_gaussians = outputs_gsf
-            except Exception:
-                # fallback: extract by position if available
-                if len(outputs_gsf) >= 4:
-                    mu_states = outputs_gsf[2]
-                if len(outputs_gsf) >= 4:
-                    cov_norms_map = outputs_gsf[3]
-                if len(outputs_gsf) >= 5:
-                    cov_traces_map = outputs_gsf[4]
-                if len(outputs_gsf) >= 6:
-                    innovations_map = outputs_gsf[5]
-                if len(outputs_gsf) >= 7:
-                    num_gaussians = outputs_gsf[6]
+        #     # try canonical unpack
+        #     try:
+        #         _, _, mu_states, cov_norms_map, cov_traces_map, innovations_map, num_gaussians = outputs_gsf
+        #     except Exception:
+        #         # fallback: extract by position if available
+        #         if len(outputs_gsf) >= 4:
+        #             mu_states = outputs_gsf[2]
+        #         if len(outputs_gsf) >= 4:
+        #             cov_norms_map = outputs_gsf[3]
+        #         if len(outputs_gsf) >= 5:
+        #             cov_traces_map = outputs_gsf[4]
+        #         if len(outputs_gsf) >= 6:
+        #             innovations_map = outputs_gsf[5]
+        #         if len(outputs_gsf) >= 7:
+        #             num_gaussians = outputs_gsf[6]
 
-            # helper: convert list-of-lists to 2D numpy array padded with nan
-            def to_2d(data):
-                if data is None:
-                    return None
-                if len(data) == 0:
-                    return None
-                # detect nested
-                first = data[0]
-                if isinstance(first, (list, tuple, np.ndarray)):
-                    maxc = max(len(row) for row in data)
-                    arr = np.full((len(data), maxc), np.nan, dtype=float)
-                    for i, row in enumerate(data):
-                        for j, val in enumerate(row):
-                            try:
-                                arr[i, j] = float(val)
-                            except Exception:
-                                arr[i, j] = np.nan
-                    return arr
-                else:
-                    # 1D sequence
-                    try:
-                        return np.array(data, dtype=float)
-                    except Exception:
-                        return None
+        #     # helper: convert list-of-lists to 2D numpy array padded with nan
 
-            cov_traces_2d = to_2d(cov_traces_map)
-            innovations_2d = to_2d(innovations_map)
-            cov_norms_2d = to_2d(cov_norms_map)
 
-            nsteps = 0
-            if cov_traces_2d is not None:
-                nsteps = cov_traces_2d.shape[0]
-            elif cov_norms_2d is not None:
-                nsteps = cov_norms_2d.shape[0]
-            elif innovations_2d is not None:
-                nsteps = innovations_2d.shape[0]
-            elif num_gaussians is not None:
-                nsteps = len(num_gaussians)
+        #     cov_traces_2d = to_2d(cov_traces_map)
+        #     innovations_2d = to_2d(innovations_map)
+        #     cov_norms_2d = to_2d(cov_norms_map)
 
-            times = np.arange(nsteps)
+        #     nsteps = 0
+        #     if cov_traces_2d is not None:
+        #         nsteps = cov_traces_2d.shape[0]
+        #     elif cov_norms_2d is not None:
+        #         nsteps = cov_norms_2d.shape[0]
+        #     elif innovations_2d is not None:
+        #         nsteps = innovations_2d.shape[0]
+        #     elif num_gaussians is not None:
+        #         nsteps = len(num_gaussians)
 
-            fig, axs = plt.subplots(4, 1, figsize=(12, 12), sharex=True)
+        #     times = np.arange(nsteps)
 
-            # Plot covariance norms for all components (as faint lines) and MAP if available
-            if cov_norms_2d is not None:
-                nc = cov_norms_2d.shape[1]
-                for j in range(nc):
-                    axs[0].plot(times, cov_norms_2d[:, j], color='C0', alpha=0.3)
-                axs[0].set_ylabel('||P|| (per component)')
-            elif cov_norms_map is not None and isinstance(cov_norms_map, (list, np.ndarray)):
-                axs[0].plot(times, cov_norms_map, '-o', label='MAP ||P||')
-                axs[0].set_ylabel('||P|| (MAP)')
-            else:
-                axs[0].text(0.5, 0.5, 'no cov_norms available', ha='center')
-            axs[0].grid(True)
+        #     fig, axs = plt.subplots(4, 1, figsize=(12, 12), sharex=True)
 
-            # Plot covariance traces
-            if cov_traces_2d is not None:
-                nc = cov_traces_2d.shape[1]
-                for j in range(nc):
-                    axs[1].plot(times, cov_traces_2d[:, j], color='C1', alpha=0.3)
-                axs[1].set_ylabel('trace(P) (per component)')
-            elif cov_traces_map is not None:
-                axs[1].plot(times, cov_traces_map, '-o', color='C1', label='MAP trace')
-                axs[1].set_ylabel('trace(P) (MAP)')
-            else:
-                axs[1].text(0.5, 0.5, 'no cov_traces available', ha='center')
-            axs[1].grid(True)
+        #     # Plot covariance norms for all components (as faint lines) and MAP if available
+        #     if cov_norms_2d is not None:
+        #         nc = cov_norms_2d.shape[1]
+        #         for j in range(nc):
+        #             axs[0].plot(times, cov_norms_2d[:, j], color='C0', alpha=0.3)
+        #         axs[0].set_ylabel('||P|| (per component)')
+        #     elif cov_norms_map is not None and isinstance(cov_norms_map, (list, np.ndarray)):
+        #         axs[0].plot(times, cov_norms_map, '-o', label='MAP ||P||')
+        #         axs[0].set_ylabel('||P|| (MAP)')
+        #     else:
+        #         axs[0].text(0.5, 0.5, 'no cov_norms available', ha='center')
+        #     axs[0].grid(True)
 
-            # Plot innovations (absolute)
-            if innovations_2d is not None:
-                nc = innovations_2d.shape[1]
-                for j in range(nc):
-                    axs[2].plot(times, np.abs(innovations_2d[:, j]), color='C2', alpha=0.3)
-                axs[2].set_ylabel('|innovation| (per component)')
-            elif innovations_map is not None:
-                axs[2].plot(times, np.abs(innovations_map), '-o', color='C2', label='|innovation| (MAP)')
-                axs[2].set_ylabel('|innovation| (MAP)')
-            else:
-                axs[2].text(0.5, 0.5, 'no innovations available', ha='center')
-            axs[2].grid(True)
+        #     # Plot covariance traces
+        #     if cov_traces_2d is not None:
+        #         nc = cov_traces_2d.shape[1]
+        #         for j in range(nc):
+        #             axs[1].plot(times, cov_traces_2d[:, j], color='C1', alpha=0.3)
+        #         axs[1].set_ylabel('trace(P) (per component)')
+        #     elif cov_traces_map is not None:
+        #         axs[1].plot(times, cov_traces_map, '-o', color='C1', label='MAP trace')
+        #         axs[1].set_ylabel('trace(P) (MAP)')
+        #     else:
+        #         axs[1].text(0.5, 0.5, 'no cov_traces available', ha='center')
+        #     axs[1].grid(True)
 
-            # mixture size
-            if num_gaussians is not None:
-                axs[3].step(times, num_gaussians[:len(times)], where='post', label='num gaussians')
-                axs[3].set_ylabel('# gaussians')
-                axs[3].set_xlabel('timestep')
-            else:
-                axs[3].text(0.5, 0.5, 'no mixture size available', ha='center')
-            axs[3].grid(True)
+        #     # Plot innovations (absolute)
+        #     if innovations_2d is not None:
+        #         nc = innovations_2d.shape[1]
+        #         for j in range(nc):
+        #             axs[2].plot(times, np.abs(innovations_2d[:, j]), color='C2', alpha=0.3)
+        #         axs[2].set_ylabel('|innovation| (per component)')
+        #     elif innovations_map is not None:
+        #         axs[2].plot(times, np.abs(innovations_map), '-o', color='C2', label='|innovation| (MAP)')
+        #         axs[2].set_ylabel('|innovation| (MAP)')
+        #     else:
+        #         axs[2].text(0.5, 0.5, 'no innovations available', ha='center')
+        #     axs[2].grid(True)
 
-            fig.tight_layout()
-            fig.savefig(os.path.join(foldername, 'gsf_components_diagnostics.png'))
-            plt.close(fig)
+        #     # mixture size
+        #     if num_gaussians is not None:
+        #         axs[3].step(times, num_gaussians[:len(times)], where='post', label='num gaussians')
+        #         axs[3].set_ylabel('# gaussians')
+        #         axs[3].set_xlabel('timestep')
+        #     else:
+        #         axs[3].text(0.5, 0.5, 'no mixture size available', ha='center')
+        #     axs[3].grid(True)
 
-            # Plot all propagated trajectories: mu_states is list over timesteps of arrays (Jmax, Nt+1, state_dim)
-            if mu_states is not None:
-                fig2, ax2 = plt.subplots(1, 1, figsize=(8, 8))
-                for t_idx, trajs in enumerate(mu_states):
-                    try:
-                        trajs = np.array(trajs)
-                    except Exception:
-                        continue
-                    # trajs shape: (Jmax, Nt+1, state_dim)
-                    for si in range(trajs.shape[0]):
-                        seq = trajs[si]
-                        if seq.shape[1] >= 2:
-                            ax2.plot(seq[:, 0], seq[:, 1], color='C3', alpha=0.2)
-                ax2.set_title('All propagated gaussian trajectories (x vs y)')
-                ax2.set_xlabel('x'); ax2.set_ylabel('y')
-                ax2.grid(True)
-                fig2.tight_layout()
-                fig2.savefig(os.path.join(foldername, 'gsf_all_trajectories.png'))
-                plt.close(fig2)
+        #     fig.tight_layout()
+        #     fig.savefig(os.path.join(foldername, 'gsf_components_diagnostics.png'))
+        #     plt.close(fig)
 
-        except Exception:
-            # best-effort plotting; don't fail the run if plotting breaks
-            pass
-        gen_and_save_mppi_results(copy.deepcopy(params), outputs_mppi, foldername, counter, alg="mppi")
-        # gen_and_save_mpc_results(copy.deepcopy(params), outputs_mpc, foldername, counter, alg="mpc")
+        #     # Plot all propagated trajectories: mu_states is list over timesteps of arrays (Jmax, Nt+1, state_dim)
+        #     if mu_states is not None:
+        #         fig2, ax2 = plt.subplots(1, 1, figsize=(8, 8))
+        #         for t_idx, trajs in enumerate(mu_states):
+        #             try:
+        #                 trajs = np.array(trajs)
+        #             except Exception:
+        #                 continue
+        #             # trajs shape: (Jmax, Nt+1, state_dim)
+        #             for si in range(trajs.shape[0]):
+        #                 seq = trajs[si]
+        #                 if seq.shape[1] >= 2:
+        #                     ax2.plot(seq[:, 0], seq[:, 1], color='C3', alpha=0.2)
+        #         ax2.set_title('All propagated gaussian trajectories (x vs y)')
+        #         ax2.set_xlabel('x'); ax2.set_ylabel('y')
+        #         ax2.grid(True)
+        #         fig2.tight_layout()
+        #         fig2.savefig(os.path.join(foldername, 'gsf_all_trajectories.png'))
+        #         plt.close(fig2)
 
-        outputs_mppi, outputs_gsf = compare_mppi_to_mpc(outputs_mppi, copy.deepcopy(params), rng_keys[trial], do_mpc=True, base_alg=True, solver=solver) 
+        # except Exception:
+        #     # best-effort plotting; don't fail the run if plotting breaks
+        #     pass
         plt.close('all')
 
 if __name__ == "__main__":

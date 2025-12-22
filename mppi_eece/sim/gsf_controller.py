@@ -220,7 +220,7 @@ class GSF_Controller_Expanded:
         }
         return (children, aux_data)
     
-    @classmethod
+    @classmethod 
     def _tree_unflatten(cls, aux_data, children):
         nl = aux_data.get('nlmodel', None)
         pl = aux_data.get('planner', None)

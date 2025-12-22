@@ -3,6 +3,8 @@ import math
 import time
 from scipy.spatial import cKDTree
 from .planner_base import Planner
+from .path_processor import PathProcessor
+from .graph import GraphBuilder
 from .sampler import Sampler, UniformSampler
 
 class Node:
@@ -30,6 +32,21 @@ class RRTStarPlanner(Planner):
             self.sampler = UniformSampler()
         else:
             self.sampler = sampler
+                
+        self.graph_builder = None
+
+        self.path_processor = PathProcessor()
+
+    def set_collision_checker(self, collision_checker):
+        self.collision_checker = collision_checker
+        if self.graph_builder is None:
+            self.graph_builder = GraphBuilder(
+                collision_checker=collision_checker,
+                ray_resolution=0.1,
+                topo_resolution=0.1
+            )
+        else:
+            self.graph_builder.collision_checker = collision_checker
 
     def plan(self, start, goal,reset=True):
         self.start_node = Node(start)
@@ -107,10 +124,14 @@ class RRTStarPlanner(Planner):
         path = []
         node = goal_node
         while node.parent is not None:
-            path.append(node.pos)
+            path.append([node.pos[0], node.pos[1]])
             node = node.parent
-        path.append(node.pos)
-        return path[::-1]
+        path.append([node.pos[0], node.pos[1]])
+
+        ### NOTE: shortcut_paths expects and returns a list of paths                                                
+        final_path = self.path_processor.shortcut_paths([path[::-1]], 
+                                                        self.graph_builder._line_visible)
+        return final_path[0]
 
     def calc_dist_to_goal(self, from_node):
         return np.linalg.norm(from_node.pos - self.end_node.pos)

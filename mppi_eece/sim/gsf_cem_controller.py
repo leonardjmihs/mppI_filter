@@ -10,6 +10,7 @@ from tqdm import tqdm
 from mppi_eece.jax_mppi.mppi_planners import MPPI_Planner_Occup
 from mppi_eece.jax_mppi.collision_checker import CollisionChecker
 from mppi_eece.sim.grid import OccupGrid
+from mppi_eece.sim.pcrb import PCRBController
 
 class GSF_CEM_Controller:
     def __init__(self, nlmodel, planner,
@@ -456,11 +457,17 @@ def do_gsf_cem(params):
     temperature = params.get("temperature", 1.0)
     Jmax = params.get("Jmax", 4)
 
+    bias_1 = np.zeros((Nt*n_u,))
+    bias_1[0] = 0.15
+    bias_2 = np.zeros((Nt*n_u,))
+    bias_2[0] = -0.15
     process_noises = params.get("process_noises", [
         # {"weight": 0.3333, "Q": np.eye(sigmae[0]) * 0.5, 'm': np.zeros((Nt*n_u,))},
-        {"weight": 0.5, "Q": sigma0_arr, 'm': np.kron(np.ones((1, Nt)), [0.0, 0.5]).ravel()},
-        {"weight": 0.25, "Q": sigma0_arr, 'm': np.kron(np.ones((1, Nt)), [0.1, 0.0]).ravel()},
-        {"weight": 0.25, "Q": sigma0_arr, 'm': np.kron(np.ones((1, Nt)), [-0.1, 0.0]).ravel()},
+        {"weight": 0.5, "Q": sigma0_arr, 'm': np.kron(np.ones((1, Nt)), [0.0, 0.0]).ravel()},
+        # {"weight": 0.25, "Q": sigma0_arr, 'm': np.kron(np.ones((1, Nt)), [0.15, 0.0]).ravel()},
+        # {"weight": 0.25, "Q": sigma0_arr, 'm': np.kron(np.ones((1, Nt)), [-0.15, 0.0]).ravel()},
+        {"weight": 0.25, "Q": sigma0_arr, 'm': bias_1},
+        {"weight": 0.25, "Q": sigma0_arr, 'm': bias_2},
         # {"weight": 0.3, "Q": np.eye(sigma0_arr.shape[0]), 'm': np.zeros_like(sigma0_arr)}
     ])
     Qs = [process_noise["Q"] for process_noise in process_noises]
@@ -502,11 +509,40 @@ def do_gsf_cem(params):
     Ps = [sigma0_arr]
     mu_states = []
 
+    # ============ PCRB INITIALIZATION ============
+    Q_process = sigma0  # Control drift
+    R_meas = 10.0 # Measurement noise variance
+    nu = 2  # Control dimension
+    dim = Nt * nu
+    sigma_r = np.sqrt(R_meas)
+    n_pcrb_samples = 1000
+    epsilon = 1e-4
+    
+    # Create PCRB controller instance
+    pcrb_controller = PCRBController(
+        Nt=Nt,
+        nu=nu,
+        # Q=np.eye(dim) * Q_process,
+        Q=np.eye(dim) *10000,
+        sigma_r=sigma_r,
+        n_samples=n_pcrb_samples
+    )
+    
+    # Initialize Fisher Information Matrix
+    J_k = jnp.eye(dim) * 1e-6
+    
+    pcrb_history = []
+    J_history = []
+    gradient_norms = []
+    mu_history = []
+    # ============================================
+
     # Containers
     states = [start.copy()]
     x_current = start.copy()
     rng_key = jax.random.PRNGKey(0)
     max_steps = int(np.ceil(T / dt))
+    weights_history = []
 
     for step in range(max_steps):
         rng_key, subkey = jax.random.split(rng_key)
@@ -549,19 +585,37 @@ def do_gsf_cem(params):
         # theta_map = np.array(calculate_new_means(0.1, costs, samples, None)[0].ravel())
 
         u_opt = np.clip(theta_map[:n_u], nlmodel.control_bounds[0], nlmodel.control_bounds[1])
-        
+                
+        # ============ PCRB UPDATE ============
+        # Complete PCRB step using PCRBController
+        J_k, pcrb_bound, grad_norms = pcrb_controller.pcrb_step(
+            J_k=J_k,
+            mu=theta_map,
+            P=jnp.eye(Nt * n_u) * 1e-6,
+            x_current=x_current,
+            q_ref=q_ref,
+            mppi_planner=planner,
+            collision_checker=cost_map,
+            epsilon=epsilon
+        )
+            
+        # Store
+        pcrb_history.append(pcrb_bound)
+        J_history.append(np.array(J_k))
+        gradient_norms.append(np.mean(grad_norms))
         # 7. Simulate
         x_current = nlmodel.dynamics_jax(x_current, u_opt, dt=dt, params=nlmodel.nominal_params)
         states.append(x_current.copy())
-        
+        mu_history.append(theta_map)
         print(f"Step {step}: x={x_current[:2]}, weights={[f'{w:.3f}' for w in weights]}, "
               f"n_comp={len(weights)}, min_cost={float(np.nanmin(costs)):.2f}")
+        weights_history.append(weights.copy())
         
         if np.linalg.norm(x_current[:2] - q_ref[:2]) < 0.5:
             print(f"Reached goal at step {step}")
             break
     
-    return states, weights, mu_states, Ps
+    return states, weights, mu_states, Ps, pcrb_history, J_history, weights_history,  mu_history
 
 
 def calculate_new_means(temp,  costs, seq, original_seq):

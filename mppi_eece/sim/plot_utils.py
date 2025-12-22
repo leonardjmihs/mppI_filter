@@ -106,8 +106,8 @@ def plot_simulation_result(states, obs, goal=None, safe_zones=[], text="", max_a
 
 
 def animate_simulation_with_sampled_states(states, obs, goal=None, safe_zones=[], sampled_xs=[], optimal_us=None, dynamics=None, costmap=None):
-    if dynamics is None:
-        print("errorr")
+    # if dynamics is None:
+    #     print("errorr")
     def update(frame, states):
         plt.gca().cla()  # Clear the current axes
         # Set axis limits

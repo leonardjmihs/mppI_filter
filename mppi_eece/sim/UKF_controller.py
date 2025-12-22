@@ -7,6 +7,7 @@ from mppi_eece.sim.grid import OccupGrid
 from mppi_eece.jax_mppi.mppi_planners import MPPI_Planner_Occup
 from mppi_eece.jax_mppi.collision_checker import CollisionChecker
 import time
+from mppi_eece.sim.pcrb import PCRBController
 
 class UKF_Controller:
     def __init__(self, system, mppi_planner, alpha=1e-2, beta=2, kappa=0,
@@ -51,32 +52,7 @@ class UKF_Controller:
         self.cov_trace_threshold = float(cov_trace_threshold)
         self.innovation_threshold = float(innovation_threshold)
         self.reset_P_scale = float(reset_P_scale)
-        self.Phi_shift = self._build_shift_jacobian()
     
-    def _build_shift_jacobian(self):
-        """
-        Build the constant shift operator Jacobian matrix.
-        
-        For control sequence [u_0, u_1, ..., u_{N-1}]:
-        Shift: [u_0, u_1, ..., u_{N-1}] → [u_1, u_2, ..., u_{N-1}, u_{N-1}]
-        
-        Returns:
-            Phi: [n_theta, n_theta] shift matrix
-        """
-        n_u = self.n_u
-        N = self.N
-        n_theta = self.n_theta
-        
-        Phi = jnp.zeros((n_theta, n_theta))
-        
-        # Shift each control forward (copy from next position)
-        for i in range(N - 1):
-            Phi = Phi.at[i*n_u:(i+1)*n_u, (i+1)*n_u:(i+2)*n_u].set(jnp.eye(n_u))
-        
-        # Last control copies from itself (duplicate)
-        Phi = Phi.at[(N-1)*n_u:N*n_u, (N-1)*n_u:N*n_u].set(jnp.eye(n_u))
-        
-        return Phi 
     def shift_controls(self, theta):
         """
         Shift operator: Phi(theta)
@@ -90,8 +66,7 @@ class UKF_Controller:
         theta_reshaped = theta.reshape((-1, self.n_u))
         theta_shifted = jnp.roll(theta_reshaped, -1, axis=0)
         # Keep last control
-        # theta_shifted = theta_shifted.at[-1].set(theta_reshaped[-1])
-        theta_shifted = theta_shifted.at[-1].set(jnp.zeros((self.n_u,)))
+        theta_shifted = theta_shifted.at[-1].set(theta_reshaped[-1])
         return theta_shifted.ravel()
     
     def generate_sigma_points(self, mu, P):
@@ -167,50 +142,30 @@ class UKF_Controller:
         Returns:
             mu_pred, P_pred, sigma_points_pred
         """
-        # # Generate sigma points
-        # sigma_points = self.generate_sigma_points(mu, P)
+        # Generate sigma points
+        sigma_points = self.generate_sigma_points(mu, P)
         
-        # # Propagate through shift dynamics
-        # sigma_points_pred = jax.vmap(self.shift_controls)(sigma_points)
+        # Propagate through shift dynamics
+        sigma_points_pred = jax.vmap(self.shift_controls)(sigma_points)
         
-        # # Compute predicted mean
-        # mu_pred = jnp.sum(self.Wm[:, None] * sigma_points_pred, axis=0)
+        # Compute predicted mean
+        mu_pred = jnp.sum(self.Wm[:, None] * sigma_points_pred, axis=0)
         
-        # # Compute predicted covariance (use symmetric / jittered form for stability)
-        # diff = sigma_points_pred - mu_pred
-        # P_pred = jnp.sum(self.Wc[:, None, None] *
-        #                 (diff[:, :, None] @ diff[:, None, :]),
-        #                 axis=0) + Q
+        # Compute predicted covariance (use symmetric / jittered form for stability)
+        diff = sigma_points_pred - mu_pred
+        P_pred = jnp.sum(self.Wc[:, None, None] *
+                        (diff[:, :, None] @ diff[:, None, :]),
+                        axis=0) + Q
 
-        # # enforce symmetry and add tiny jitter to preserve PD
-        # P_pred = (P_pred + P_pred.T) / 2.0
-        # P_pred = P_pred + jnp.eye(self.n_theta) * 1e-9
-
-        # # defensive NaN check (kept but non-blocking)
-        # if jnp.any(jnp.isnan(mu_pred)):
-        #     breakpoint()
-        #     raise RuntimeError("NaN in UKF predicted mean")
-        # return mu_pred, P_pred, sigma_points_pred
-        mu_pred = self.shift_controls(mu)
-        # For covariance, we need the Jacobian of shift_controls
-        # Since shift is linear, the Jacobian is constant: Φ
-    
-        # Linear prediction: P_pred = Φ @ P @ Φ^T + Q
-        P_pred = self.Phi_shift @ P @ self.Phi_shift.T + Q
-    
-        # Enforce symmetry and add tiny jitter to preserve PD
+        # enforce symmetry and add tiny jitter to preserve PD
         P_pred = (P_pred + P_pred.T) / 2.0
         P_pred = P_pred + jnp.eye(self.n_theta) * 1e-9
-    
-        # Defensive NaN check
+
+        # defensive NaN check (kept but non-blocking)
         if jnp.any(jnp.isnan(mu_pred)):
-            breakpoint()
+            # don't breakpoint in library code; raise to signal upstream
             raise RuntimeError("NaN in UKF predicted mean")
-    
-        # Generate sigma points from predicted distribution
-        # (still needed for update step)
-        sigma_points_pred = self.generate_sigma_points(mu_pred, P_pred)
-    
+
         return mu_pred, P_pred, sigma_points_pred
     
     def update(self, mu_pred, P_pred, sigma_points_pred, 
@@ -530,33 +485,29 @@ def do_ukf_with_pcrb(params):
     # Initialize
     U_init = np.kron(np.ones((1, Nt)), [0.0, 1.0]).ravel()
     mu = jnp.array(U_init)
-    P = sigma0 # Control uncertainty only
+    P = sigma0/100 # Control uncertainty only
     
     # Process and measurement noise
-    Q_process = sigma0*100  # Control drift
+    # Q_process = sigma0*100  # Control drift
+    Q_process = sigma0  # Control drift
     R_meas = 10.0 # Measurement noise variance
     
     # ============ PCRB INITIALIZATION ============
     nu = 2  # Control dimension
     dim = Nt * nu
     sigma_r = np.sqrt(R_meas)
-    n_pcrb_samples = 200
+    n_pcrb_samples = 1000
     epsilon = 1e-4
     
-    # Build shift operator F
-    F = np.zeros((dim, dim))
-    for i in range(Nt - 1):
-        start_i = i * nu
-        end_i = (i + 1) * nu
-        start_j = (i + 1) * nu
-        end_j = (i + 2) * nu
-        F[start_i:end_i, start_j:end_j] = np.eye(nu)
-    F = jnp.array(F)
-    
-    # Precompute D11 and D12
-    Q_inv = jnp.linalg.inv(jnp.array(sigma0))
-    D11 = F.T @ Q_inv @ F
-    D12 = -F.T @ Q_inv
+    # Create PCRB controller instance
+    pcrb_controller = PCRBController(
+        Nt=Nt,
+        nu=nu,
+        # Q=np.eye(dim) * Q_process,
+        Q=np.eye(dim) *10000,
+        sigma_r=sigma_r,
+        n_samples=n_pcrb_samples
+    )
     
     # Initialize Fisher Information Matrix
     J_k = jnp.eye(dim) * 1e-6
@@ -565,6 +516,7 @@ def do_ukf_with_pcrb(params):
     J_history = []
     gradient_norms = []
     # ============================================
+    
     
     # Simulate
     states = [start]
@@ -585,72 +537,23 @@ def do_ukf_with_pcrb(params):
         )
         
         # ============ PCRB UPDATE ============
-        # try:
-        # Sample control sequences from p(θ|y)
-        mu_np = np.array(mu).flatten()
-        P_np = np.array(P)
-            
-        # Ensure positive definite
-        eigvals = np.linalg.eigvalsh(P_np)
-        if np.min(eigvals) < 1e-8:
-            P_np = P_np + np.eye(len(P_np)) * 1e-6
-            
-        samples = np.random.multivariate_normal(mu_np, P_np, size=n_pcrb_samples)
-            
-        # Compute gradient outer products via finite differences
-        gradient_outer_products = []
-        grad_norms = []
-        st_time = time.time()
-        def compute_gradient_for_sample(sample):
-                # Compute baseline cost
-                U_baseline = sample.reshape((Nt, nu))
-                outputs = mppi_planner.eval_U_seq(
-                    U_baseline, sample, x_current, q_ref, collision_checker
-                )
-                cost_baseline = outputs[0]
-                jnp.clip(cost_baseline, 0,1e10)
-                
-                # Compute gradient via finite differences (vmapped over dimensions)
-                def compute_partial_derivative(i):
-                    sample_perturbed = sample.at[i].add(epsilon)
-                    U_perturbed = sample_perturbed.reshape((Nt, nu))
-                    
-                    outputs = mppi_planner.eval_U_seq(
-                        U_perturbed, sample_perturbed, x_current, q_ref, collision_checker
-                    )
-                    cost_perturbed = outputs[0]
-                    
-                    return (cost_perturbed - cost_baseline) / epsilon
-                
-                # Vmap over all control dimensions
-                gradient = jax.vmap(compute_partial_derivative)(jnp.arange(len(sample)))
-                return gradient, jnp.outer(gradient, gradient), jnp.linalg.norm(gradient)
-        gradients, outer_products, norms = jax.vmap(compute_gradient_for_sample)(samples)
-        gradient_outer_products = [np.array(op) for op in outer_products]
-
-        grad_norms = [float(n) for n in norms]
-        end_time = time.time()
-        # Compute D22 = (1/σ²) E[g g^T]
-        E_gg_T = np.mean(gradient_outer_products, axis=0)
-        D22 = jnp.array(E_gg_T) / (sigma_r ** 2)
-            
-        # Update FIM: J_{k+1} = D22 - D12 (J_k + D11)^{-1} D12^T
-        sum_term = J_k + D11
-        solve_term = jnp.linalg.pinv(sum_term) @ D12.T
-            
-        correction = D12 @ solve_term
-        J_k = D22 - correction
-            
-        # Compute PCRB bound = trace(J^{-1})
-        J_inv = jnp.linalg.pinv(J_k)
-            
-        pcrb_bound = float(jnp.trace(J_inv))
+        # Complete PCRB step using PCRBController
+        J_k, pcrb_bound, grad_norms = pcrb_controller.pcrb_step(
+            J_k=J_k,
+            mu=mu,
+            P=jnp.eye(Nt * 2) * 1e-6,
+            x_current=x_current,
+            q_ref=q_ref,
+            mppi_planner=mppi_planner,
+            collision_checker=collision_checker,
+            epsilon=epsilon
+        )
             
         # Store
         pcrb_history.append(pcrb_bound)
         J_history.append(np.array(J_k))
         gradient_norms.append(np.mean(grad_norms))
-            
+        # ============================================ 
         try:
             P_np = np.array(P)
             cov_norm = float(np.linalg.norm(P_np, ord='fro'))
@@ -699,7 +602,6 @@ def do_ukf_with_pcrb(params):
         if np.linalg.norm(x_current[:2] - q_ref[:2]) < 0.5:
             print(f"Reached goal at t={t:.2f}")
             break
-    
     # Return simulation results with PCRB data
     return (states, costs, sigma_sequences, cov_norms, cov_traces, innovations, 
             reset_flags, ukf.cov_trace_threshold, ukf.innovation_threshold,

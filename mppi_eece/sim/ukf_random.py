@@ -63,10 +63,10 @@ def trivial_problem1():
 
     params['nlmodel'] = Unicycle({"lb": min_control, "ub": max_control}, dt=params['dt'])
     params['T'] = 24
-    sigma0 = np.diag(np.array([np.pi/4, 1.0]))
+    sigma0 = np.diag(np.array([np.pi/4, 1.0]))*100
     # params['sigma0'] = np.kron(np.eye(params['Nt']), sigma0)
     params['sigma0'] = np.kron(np.diag(1+np.arange(params['Nt'])[::-1]), sigma0)
-    params['temperature'] = 1.0
+    params['temperature'] = 10.0
     params['Q'] = np.diag([1.0, 1.0, 0.0])
     params['QT'] = np.diag([5.0, 5.0, 0.0])
     params['R'] = np.diag([0.1, 0.1])
@@ -237,13 +237,8 @@ def compare_mppi_to_mpc(mppi_outputs, params, rng_key, do_mpc=True, ais_iters=0,
     return optimal_us, optimal_states, optimal_costs, rmse_per_timestep
 
 def plot_rmse_pcrg(rmse_per_timestep, pcrb_history, J_history, foldername, counter, alg="ukf"):
-    # pcrb_history = array of float(jnp.trace(J_inv))
     plt.figure()
-    # The elements in the diagonal of PCRB(xk) = J−1
-    # k bound the achievable MSE for a filtering
-    # solution ˆxk|k. Create a plot in your simulator showing the evolution of √PCRB(xk) over
-    # time, bounding the RMSE of the filtering solution in Part 2. Show a plot for each state in
-    # xk, 
+
     pcrb_std = np.sqrt(np.array([np.linalg.inv(J).diagonal() for J in J_history]))
     for dim in range(2):
         plt.subplot(3,1,dim+1)
@@ -251,14 +246,12 @@ def plot_rmse_pcrg(rmse_per_timestep, pcrb_history, J_history, foldername, count
         plt.legend()
     
     plt.subplot(3,1,3)
-    # plot efficiency ratio pcrb_history/trace(rmse)
     trace_rmse = []
     for rmse in rmse_per_timestep:
         if np.isscalar(rmse):
             trace_rmse.append(np.nan)
         else:
             trace_rmse.append(np.trace(rmse))
-    # find idx wtih nans in trace and remove from both arrays
     valid_idx = ~np.isnan(trace_rmse)
     plt.plot( np.array(pcrb_history)[valid_idx] / np.array(trace_rmse)[valid_idx], label='PCRB efficiency')
 

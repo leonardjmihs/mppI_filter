@@ -32,7 +32,7 @@ class MPPI_Planner_Occup:
         terminal_state = cost_and_term[1]
         terminal_cost = jnp.dot((terminal_state - q_ref), jnp.dot(self.QT, (terminal_state - q_ref)))
         cost += terminal_cost 
-        cost += u_seq.ravel().T @ jnp.diag(1.0 / jnp.diag(self.sigma)) @ (u_seq.ravel().T - original_u) * (1-self.alpha) * (self.temperature)
+        # cost += u_seq.ravel().T @ jnp.diag(1.0 / jnp.diag(self.sigma)) @ (u_seq.ravel().T - original_u) * (1-self.alpha) * (self.temperature)
         
         return (cost, terminal_state, state_seq, jnp.sum(min_sz_dist))
 
